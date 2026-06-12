@@ -248,6 +248,7 @@ INSERT IGNORE INTO system_configs (config_key, config_value, description) VALUES
     ('kg.relation_auto_threshold', '0.8', '关系自动入图阈值'),
     ('kg.batch_chunks', '20', '每个并行抽取分段包含的切块数'),
     ('kg.max_parallel_batches', '8', '图谱抽取最大并行分段数'),
+    ('kg.max_active_batches_per_document', '2', '单文档同时抽取的最大分段数'),
     ('kg.batch_retry_limit', '2', '图谱抽取分段失败重试次数'),
     ('kg.cross_relation_top_k', '30', '跨文档关系候选召回数量');
 

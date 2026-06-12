@@ -15,6 +15,11 @@ class KgExtractionSettings(BaseModel):
     chunk_overlap: int = Field(default=128, ge=0, le=4999)
     relation_candidate_threshold: float = Field(default=0.2, ge=0, le=1)
     relation_auto_threshold: float = Field(default=0.8, ge=0, le=1)
+    batch_chunks: int = Field(default=20, ge=1, le=100)
+    max_parallel_batches: int = Field(default=8, ge=1, le=16)
+    max_active_batches_per_document: int = Field(default=2, ge=1, le=16)
+    batch_retry_limit: int = Field(default=2, ge=0, le=5)
+    cross_relation_top_k: int = Field(default=30, ge=1, le=200)
 
 
 class SystemConfigCreate(BaseModel):

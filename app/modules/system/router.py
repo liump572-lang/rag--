@@ -35,7 +35,7 @@ def get_kg_extraction_settings(
 ):
     if current_user.role != "admin":
         return error_response(403, "无权限")
-    from app.common.kg_settings import get_kg_settings
+    from app.common.kg_settings import KG_SETTING_DEFAULTS, get_kg_settings
     values = get_kg_settings(db)
     return success_response(data={
         "chunk_min_chars": values["chunk.min_chars"],
@@ -43,6 +43,14 @@ def get_kg_extraction_settings(
         "chunk_overlap": values["chunk.overlap"],
         "relation_candidate_threshold": values["kg.relation_candidate_threshold"],
         "relation_auto_threshold": values["kg.relation_auto_threshold"],
+        "batch_chunks": values.get("kg.batch_chunks", KG_SETTING_DEFAULTS["kg.batch_chunks"]),
+        "max_parallel_batches": values.get("kg.max_parallel_batches", KG_SETTING_DEFAULTS["kg.max_parallel_batches"]),
+        "max_active_batches_per_document": values.get(
+            "kg.max_active_batches_per_document",
+            KG_SETTING_DEFAULTS["kg.max_active_batches_per_document"],
+        ),
+        "batch_retry_limit": values.get("kg.batch_retry_limit", KG_SETTING_DEFAULTS["kg.batch_retry_limit"]),
+        "cross_relation_top_k": values.get("kg.cross_relation_top_k", KG_SETTING_DEFAULTS["kg.cross_relation_top_k"]),
     })
 
 
@@ -62,6 +70,11 @@ def update_kg_extraction_settings(
             "chunk.overlap": body.chunk_overlap,
             "kg.relation_candidate_threshold": body.relation_candidate_threshold,
             "kg.relation_auto_threshold": body.relation_auto_threshold,
+            "kg.batch_chunks": body.batch_chunks,
+            "kg.max_parallel_batches": body.max_parallel_batches,
+            "kg.max_active_batches_per_document": body.max_active_batches_per_document,
+            "kg.batch_retry_limit": body.batch_retry_limit,
+            "kg.cross_relation_top_k": body.cross_relation_top_k,
         })
     except ValueError as exc:
         return error_response(400, str(exc))
@@ -71,6 +84,11 @@ def update_kg_extraction_settings(
         "chunk.overlap": "文档切块重叠量",
         "kg.relation_candidate_threshold": "关系候选保留阈值",
         "kg.relation_auto_threshold": "关系自动入图阈值",
+        "kg.batch_chunks": "每个并行抽取分段包含的切块数",
+        "kg.max_parallel_batches": "图谱抽取最大并行分段数",
+        "kg.max_active_batches_per_document": "单文档同时抽取的最大分段数",
+        "kg.batch_retry_limit": "图谱抽取分段失败重试次数",
+        "kg.cross_relation_top_k": "跨文档关系候选召回数量",
     }
     for key, value in values.items():
         row = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()

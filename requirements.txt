@@ -16,6 +16,7 @@ redis==5.1.1
 celery[redis]==5.4.0
 
 chromadb==0.5.5
+onnxruntime==1.19.2
 
 neo4j==5.25.0
 

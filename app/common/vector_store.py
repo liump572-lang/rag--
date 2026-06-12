@@ -10,8 +10,8 @@ from chromadb.config import Settings as ChromaSettings
 from app.common.llm_client import embed_text
 from app.config import settings
 
-CHROMA_COLLECTION = "document_chunks"
-EMBEDDING_DIM = 384  # Keep compatible with the existing Chroma collection.
+EMBEDDING_DIM = settings.embedding_dim
+CHROMA_COLLECTION = f"document_chunks_v{EMBEDDING_DIM}"
 EMBED_BATCH_SIZE = 20
 EMBED_RETRY_DELAY = 2
 
@@ -45,7 +45,7 @@ def get_or_create_collection():
 def _embed_batch(texts: List[str]) -> List[List[float]]:
     """Embed a list of texts using DeepSeek API with retry."""
     global _remote_embeddings_available
-    if not _remote_embeddings_available:
+    if not _remote_embeddings_available or not _has_remote_embedding_config():
         return [_local_hash_embedding(text) for text in texts]
 
     embeddings = []
@@ -73,6 +73,11 @@ def _is_not_found_error(error: Exception) -> bool:
     if status_code is None:
         status_code = getattr(getattr(error, "response", None), "status_code", None)
     return status_code == 404
+
+
+def _has_remote_embedding_config() -> bool:
+    key = (settings.deepseek_api_key or "").strip()
+    return bool(key and "your-deepseek-api-key" not in key and "sk-your" not in key)
 
 
 def _local_hash_embedding(text: str) -> List[float]:
@@ -148,6 +153,8 @@ def search_chunks(
     collection = get_or_create_collection()
 
     try:
+        if not _has_remote_embedding_config():
+            raise ValueError("remote embedding api key is not configured")
         query_embedding = embed_text(query)
         if len(query_embedding) != EMBEDDING_DIM:
             raise ValueError("remote embedding dimension is incompatible with the collection")

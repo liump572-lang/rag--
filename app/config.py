@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     deepseek_api_base: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-v4-flash"
     embedding_model: str = "deepseek-embedding"
+    embedding_dim: int = 1024
 
     # JWT
     jwt_secret_key: str = "change-this-to-a-random-secret-key"

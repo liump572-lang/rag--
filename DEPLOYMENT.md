@@ -49,6 +49,22 @@
 
 ## 3. Docker Compose 一键部署
 
+### 3.0 Windows 推荐一键脚本
+
+在项目根目录执行：
+
+```powershell
+.\deploy.ps1
+```
+
+脚本会自动检查 Docker、创建 `docker/.env`、构建镜像、启动服务并等待前后端健康检查通过。首次真实使用前仍需编辑 `docker/.env`，填写 `DEEPSEEK_API_KEY`、数据库密码和 `JWT_SECRET_KEY`。
+
+如果需要清空旧数据卷并重新初始化：
+
+```powershell
+.\deploy.ps1 -ResetData
+```
+
 ### 3.1 克隆项目
 
 ```bash
@@ -89,6 +105,7 @@ DEEPSEEK_API_KEY=your-deepseek-api-key-here
 DEEPSEEK_API_BASE=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-v4-flash
 EMBEDDING_MODEL=deepseek-embedding
+EMBEDDING_DIM=1024
 
 JWT_SECRET_KEY=generate-a-random-secret-key
 ```

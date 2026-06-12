@@ -11,6 +11,7 @@ KG_SETTING_DEFAULTS = {
     "kg.relation_auto_threshold": 0.8,
     "kg.batch_chunks": 20,
     "kg.max_parallel_batches": 8,
+    "kg.max_active_batches_per_document": 2,
     "kg.batch_retry_limit": 2,
     "kg.cross_relation_top_k": 30,
 }
@@ -36,6 +37,7 @@ def validate_kg_settings(values: dict) -> dict:
     automatic = float(values["kg.relation_auto_threshold"])
     batch_chunks = int(values["kg.batch_chunks"])
     max_parallel_batches = int(values["kg.max_parallel_batches"])
+    max_active_batches_per_document = int(values["kg.max_active_batches_per_document"])
     batch_retry_limit = int(values["kg.batch_retry_limit"])
     cross_relation_top_k = int(values["kg.cross_relation_top_k"])
 
@@ -53,6 +55,8 @@ def validate_kg_settings(values: dict) -> dict:
         raise ValueError("每个抽取分段的切块数必须在 1 至 100 之间")
     if not 1 <= max_parallel_batches <= 16:
         raise ValueError("并行抽取分段数必须在 1 至 16 之间")
+    if not 1 <= max_active_batches_per_document <= max_parallel_batches:
+        raise ValueError("单文档并行分段数必须在 1 至总并行分段数之间")
     if not 0 <= batch_retry_limit <= 5:
         raise ValueError("抽取分段重试次数必须在 0 至 5 之间")
     if not 1 <= cross_relation_top_k <= 200:
@@ -65,6 +69,7 @@ def validate_kg_settings(values: dict) -> dict:
         "kg.relation_auto_threshold": automatic,
         "kg.batch_chunks": batch_chunks,
         "kg.max_parallel_batches": max_parallel_batches,
+        "kg.max_active_batches_per_document": max_active_batches_per_document,
         "kg.batch_retry_limit": batch_retry_limit,
         "kg.cross_relation_top_k": cross_relation_top_k,
     }

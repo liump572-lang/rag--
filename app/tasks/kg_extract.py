@@ -1,13 +1,16 @@
 import json
 import re
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from sqlalchemy import and_, exists, or_
 
 from app.common.graph_store import (
     create_node as neo4j_create_node,
     create_relation as neo4j_create_relation,
     run_query,
 )
+from app.common.kg_local_extractor import extract_local_knowledge
 from app.common.llm_client import chat
 from app.database import SessionLocal
 from app.config import settings
@@ -120,9 +123,15 @@ def extract_knowledge_batch_task(self, batch_id: int):
                 batch.finished_at = datetime.now()
                 db.commit()
                 return {"status": "stale"}
-            data = _parse_json_response(_call_extract_entities(
-                _build_extraction_text(doc.title, chunks, index), subject_name, doc.doc_type
-            ))
+            extraction_text = _build_extraction_text(doc.title, chunks, index)
+            local_data = extract_local_knowledge(extraction_text, doc.doc_type)
+            try:
+                data = _parse_json_response(_call_extract_entities(
+                    extraction_text, subject_name, doc.doc_type
+                ))
+            except Exception:
+                data = None
+            data = _merge_extraction_payloads(data, local_data)
             if not data:
                 continue
             for kp in data.get("knowledge_points", []):
@@ -227,24 +236,59 @@ def _refresh_parallel_run(db, run_id: int):
 def _dispatch_parallel_batches(db):
     """Keep only the configured number of graph extraction batches in flight."""
     from app.common.kg_settings import get_kg_settings
-    limit = get_kg_settings(db)["kg.max_parallel_batches"]
+    kg_settings = get_kg_settings(db)
+    limit = kg_settings["kg.max_parallel_batches"]
+    per_document_limit = kg_settings["kg.max_active_batches_per_document"]
+    _release_stale_inflight_batches(db)
     active = db.query(KgExtractionBatch).filter(
         KgExtractionBatch.status.in_(("dispatched", "running")),
     ).count()
     slots = max(0, limit - active)
     if not slots:
         return
-    batches = db.query(KgExtractionBatch).join(
+    queued = db.query(KgExtractionBatch).join(
         KgExtractionRun, KgExtractionRun.id == KgExtractionBatch.run_id,
     ).filter(
         KgExtractionBatch.status == "queued",
         KgExtractionRun.status == "running",
-    ).order_by(KgExtractionBatch.id).limit(slots).all()
+    ).order_by(KgExtractionRun.started_at.desc(), KgExtractionBatch.id).all()
+    active_rows = db.query(KgExtractionBatch.document_id).filter(
+        KgExtractionBatch.status.in_(("dispatched", "running")),
+    ).all()
+    active_by_document = {}
+    for row in active_rows:
+        active_by_document[row.document_id] = active_by_document.get(row.document_id, 0) + 1
+
+    batches = []
+    for batch in queued:
+        active_for_doc = active_by_document.get(batch.document_id, 0)
+        if active_for_doc >= per_document_limit:
+            continue
+        batches.append(batch)
+        active_by_document[batch.document_id] = active_for_doc + 1
+        if len(batches) >= slots:
+            break
     for batch in batches:
         batch.status = "dispatched"
     db.commit()
     for batch in batches:
         extract_knowledge_batch_task.delay(batch.id)
+
+
+def _release_stale_inflight_batches(db, timeout_minutes: int = 30):
+    """Return batches abandoned by worker restarts to the queue."""
+    cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
+    db.query(KgExtractionBatch).filter(
+        KgExtractionBatch.status == "dispatched",
+        KgExtractionBatch.started_at.is_(None),
+        KgExtractionBatch.created_at < cutoff,
+    ).update({"status": "queued"}, synchronize_session=False)
+    db.query(KgExtractionBatch).filter(
+        KgExtractionBatch.status == "running",
+        KgExtractionBatch.started_at.isnot(None),
+        KgExtractionBatch.started_at < cutoff,
+    ).update({"status": "queued", "started_at": None}, synchronize_session=False)
+    db.commit()
 
 
 @celery_app.task(name="kg_task.extract_knowledge", bind=True, max_retries=2, default_retry_delay=60)
@@ -311,6 +355,7 @@ def extract_knowledge_task(self, document_id: int, run_id: int = None):
             try:
                 response = _call_extract_entities(batch_text, subject_name, doc.doc_type)
                 data = _parse_json_response(response)
+                data = _merge_extraction_payloads(data, extract_local_knowledge(batch_text, doc.doc_type))
                 if data:
                     for kp in data.get("knowledge_points", []):
                         kp["_batch"] = f"{batch_start + 1}-{batch_start + len(batch)}"
@@ -323,7 +368,14 @@ def extract_knowledge_task(self, document_id: int, run_id: int = None):
                     all_rels.extend(data.get("relations", []))
             except Exception:
                 # A malformed or transient batch must not discard the rest of a large document.
-                pass
+                data = extract_local_knowledge(batch_text, doc.doc_type)
+                for kp in data.get("knowledge_points", []):
+                    kp["_batch"] = f"{batch_start + 1}-{batch_start + len(batch)}"
+                    kp["_chunk_id"] = batch[0].id if batch else None
+                for rel in data.get("relations", []):
+                    rel["_chunk_id"] = batch[0].id if batch else None
+                all_kps.extend(data.get("knowledge_points", []))
+                all_rels.extend(data.get("relations", []))
             if run:
                 run.processed_batches = min(run.batch_count, run.processed_batches + 1)
                 db.commit()
@@ -389,6 +441,8 @@ def _build_extraction_text(doc_title: str, chunks: list, index: int) -> str:
 
 
 def _call_extract_entities(batch_text: str, subject_name: str, doc_type: str) -> str:
+    if not _has_remote_llm_config():
+        raise RuntimeError("remote llm api key is not configured")
     prompt = f"""你是学科知识图谱构建专家。请从主切块中提取细粒度、可解释的实体和关系。
 
 所属科目：{subject_name}
@@ -432,6 +486,19 @@ def _call_extract_entities(batch_text: str, subject_name: str, doc_type: str) ->
     )
 
 
+def _has_remote_llm_config() -> bool:
+    key = (settings.deepseek_api_key or "").strip()
+    return bool(key and "your-deepseek-api-key" not in key and "sk-your" not in key)
+
+
+def _merge_extraction_payloads(llm_data: dict, local_data: dict) -> dict:
+    data = llm_data or {"knowledge_points": [], "relations": []}
+    local_data = local_data or {"knowledge_points": [], "relations": []}
+    data["knowledge_points"] = list(data.get("knowledge_points") or []) + list(local_data.get("knowledge_points") or [])
+    data["relations"] = list(data.get("relations") or []) + list(local_data.get("relations") or [])
+    return data
+
+
 def _merge_entities(all_kps: list, all_rels: list, doc_title: str, subject_name: str) -> tuple:
     """Merge and deduplicate entities across batches."""
     if not all_kps:
@@ -442,7 +509,7 @@ def _merge_entities(all_kps: list, all_rels: list, doc_title: str, subject_name:
     unique_kps = []
     for kp in all_kps:
         name = kp.get("name", "").strip()
-        if not name or len(name) > 100:
+        if not _is_valid_extracted_entity(name):
             continue
         normalized = _normalize_entity_name(name)
         aliases = [alias.strip() for alias in kp.get("aliases", []) if isinstance(alias, str) and alias.strip()]
@@ -481,6 +548,23 @@ def _normalize_entity_name(name: str) -> str:
     return re.sub(r"[()（）\[\]【】]", "", text)
 
 
+def _is_valid_extracted_entity(name: str) -> bool:
+    name = (name or "").strip()
+    if not name or len(name) < 2 or len(name) > 100:
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+)*", name):
+        return False
+    if re.fullmatch(r"[a-z_][a-z0-9_]{2,}", name):
+        allowed = {
+            "transformer", "bert", "gpt", "cnn", "rnn", "lstm", "gru", "relu",
+            "softmax", "dropout", "adam", "sgd", "resnet", "vgg", "gan", "svm",
+        }
+        return name.lower() in allowed
+    if re.fullmatch(r"[a-z][a-z0-9_]*s", name):
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", name))
+
+
 def _dedup_relations(rels: list) -> list:
     """Deduplicate relations by (source, target, type)."""
     seen = set()
@@ -506,7 +590,7 @@ def _infer_global_relationships(kps: list, doc_title: str, subject_name: str) ->
     Use LLM to infer relationships between ALL extracted entities.
     This catches cross-batch connections that were missed in Phase 1.
     """
-    if len(kps) < 2:
+    if len(kps) < 2 or not _has_remote_llm_config():
         return []
 
     relationships = []
@@ -738,18 +822,21 @@ def _link_to_existing_graph(db, new_kps: list, name_to_id: dict, subject_id: int
     Link newly extracted entities to existing knowledge graph nodes
     in the same subject using LLM-based relationship discovery.
     """
-    if len(new_kps) < 1:
+    if len(new_kps) < 1 or not _has_remote_llm_config():
         return 0
-
-    from app.models import KnowledgePoint
 
     # Get existing entities in the same subject (excluding the ones just created)
     new_ids = set(name_to_id.values())
+    active_source = exists().where(and_(
+        KnowledgePointSource.knowledge_point_id == KnowledgePoint.id,
+        KnowledgePointSource.document_id == Document.id,
+    ))
     existing_kps = (
         db.query(KnowledgePoint)
         .filter(
             KnowledgePoint.subject_id == subject_id,
             ~KnowledgePoint.id.in_(new_ids),
+            or_(KnowledgePoint.origin == "manual", active_source),
         )
         .limit(kg_settings["kg.cross_relation_top_k"])
         .all()
@@ -908,6 +995,19 @@ def _safe_confidence(value, default: float = 0.8) -> float:
 def _store_source(db, point_id: int, document_id: int, kp: dict, canonical_name: str):
     if not document_id:
         return
+    existing = db.query(KnowledgePointSource).filter(
+        KnowledgePointSource.knowledge_point_id == point_id,
+        KnowledgePointSource.document_id == document_id,
+        KnowledgePointSource.chunk_id == kp.get("_chunk_id"),
+    ).first()
+    if existing:
+        existing.raw_name = kp.get("name", canonical_name)[:100]
+        existing.canonical_name = canonical_name[:100]
+        existing.evidence_text = (kp.get("evidence") or kp.get("description") or "")[:1000]
+        existing.extraction_batch = kp.get("_batch")
+        existing.confidence = max(float(existing.confidence), _safe_confidence(kp.get("confidence")))
+        db.commit()
+        return
     source = KnowledgePointSource(
         knowledge_point_id=point_id,
         document_id=document_id,
@@ -923,6 +1023,20 @@ def _store_source(db, point_id: int, document_id: int, kp: dict, canonical_name:
 
 
 def _store_relation_evidence(db, relation_id: int, document_id: int, rel: dict):
+    existing = db.query(KnowledgeRelationEvidence).filter(
+        KnowledgeRelationEvidence.relation_id == relation_id,
+        KnowledgeRelationEvidence.document_id == document_id,
+        KnowledgeRelationEvidence.chunk_id == rel.get("_chunk_id"),
+        KnowledgeRelationEvidence.source_name == rel.get("source", "")[:100],
+        KnowledgeRelationEvidence.target_name == rel.get("target", "")[:100],
+        KnowledgeRelationEvidence.relation_type == rel.get("type", "RELATED")[:30],
+    ).first()
+    if existing:
+        existing.evidence_text = (rel.get("evidence") or rel.get("description") or "")[:1000]
+        existing.confidence = max(float(existing.confidence), _safe_confidence(rel.get("confidence")))
+        existing.prompt_version = PROMPT_VERSION
+        db.commit()
+        return
     db.add(KnowledgeRelationEvidence(
         relation_id=relation_id,
         document_id=document_id,
