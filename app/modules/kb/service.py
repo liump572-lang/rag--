@@ -8,7 +8,19 @@ from sqlalchemy.orm import Session
 from app.common.parsers import parse_document
 from app.common.utils import generate_filename
 from app.config import settings
-from app.models import Document, DocumentChunk, Subject
+from app.models import (
+    Document,
+    DocumentChunk,
+    KgExtractionBatch,
+    KgExtractionRun,
+    KgSyncFailure,
+    KnowledgePoint,
+    KnowledgePointSource,
+    KnowledgeRelation,
+    KnowledgeRelationCandidate,
+    KnowledgeRelationEvidence,
+    Subject,
+)
 
 
 ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
@@ -117,15 +129,21 @@ class KbService:
         if not doc:
             return False
 
-        if os.path.exists(doc.file_path):
-            os.remove(doc.file_path)
+        from app.common.vector_store import delete_document_chunks
+        delete_document_chunks(document_id, strict=True)
+
+        file_path = doc.file_path
+        neo4j_cleanup = _cleanup_document_kg_data(db, document_id)
+        _cancel_document_kg_jobs(db, document_id, delete_records=True)
 
         db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
         db.delete(doc)
         db.commit()
 
-        from app.common.vector_store import delete_document_chunks
-        delete_document_chunks(document_id)
+        _sync_document_kg_deletes(db, neo4j_cleanup)
+
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
         return True
 
     @staticmethod
@@ -134,30 +152,19 @@ class KbService:
         if not doc:
             raise ValueError("Document not found")
 
-        from app.models import KgExtractionBatch, KgExtractionRun
+        from app.common.vector_store import delete_document_chunks
+        delete_document_chunks(document_id, strict=True)
+
         doc.parse_revision = (doc.parse_revision or 0) + 1
-        active_run_ids = [
-            row.id for row in db.query(KgExtractionRun.id).filter(
-                KgExtractionRun.document_id == document_id,
-                KgExtractionRun.status.in_(("queued", "running")),
-            ).all()
-        ]
-        if active_run_ids:
-            db.query(KgExtractionBatch).filter(
-                KgExtractionBatch.run_id.in_(active_run_ids),
-                KgExtractionBatch.status.in_(("queued", "running")),
-            ).update({"status": "stale"}, synchronize_session=False)
-            db.query(KgExtractionRun).filter(
-                KgExtractionRun.id.in_(active_run_ids)
-            ).update({"status": "canceled"}, synchronize_session=False)
+        neo4j_cleanup = _cleanup_document_kg_data(db, document_id)
+        _cancel_document_kg_jobs(db, document_id, delete_records=False)
         db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
         doc.parse_status = "pending"
         doc.error_msg = None
         doc.chunk_count = 0
         db.commit()
 
-        from app.common.vector_store import delete_document_chunks
-        delete_document_chunks(document_id)
+        _sync_document_kg_deletes(db, neo4j_cleanup)
 
         from app.tasks.document_parse import parse_document_task
         parse_document_task.delay(document_id)
@@ -294,3 +301,180 @@ def _enrich_chunks_with_context(chunks: list, structure: dict, doc_title: str) -
             enriched.append(chunk)
 
     return enriched
+
+
+def _cancel_document_kg_jobs(db: Session, document_id: int, delete_records: bool = False):
+    run_ids = [
+        row.id for row in db.query(KgExtractionRun.id)
+        .filter(KgExtractionRun.document_id == document_id)
+        .all()
+    ]
+    if not run_ids:
+        return
+
+    if delete_records:
+        db.query(KgExtractionBatch).filter(
+            or_(
+                KgExtractionBatch.run_id.in_(run_ids),
+                KgExtractionBatch.document_id == document_id,
+            )
+        ).delete(synchronize_session=False)
+        db.query(KgExtractionRun).filter(KgExtractionRun.id.in_(run_ids)).delete(synchronize_session=False)
+        return
+
+    db.query(KgExtractionBatch).filter(
+        or_(
+            KgExtractionBatch.run_id.in_(run_ids),
+            KgExtractionBatch.document_id == document_id,
+        ),
+        KgExtractionBatch.status.in_(("queued", "dispatched", "running")),
+    ).update({"status": "stale"}, synchronize_session=False)
+    db.query(KgExtractionRun).filter(
+        KgExtractionRun.id.in_(run_ids),
+        KgExtractionRun.status.in_(("queued", "running")),
+    ).update({"status": "canceled"}, synchronize_session=False)
+
+
+def _cleanup_document_kg_data(db: Session, document_id: int) -> dict:
+    point_ids = {
+        row.knowledge_point_id for row in db.query(KnowledgePointSource.knowledge_point_id)
+        .filter(KnowledgePointSource.document_id == document_id)
+        .all()
+    }
+    direct_relation_ids = {
+        row.relation_id for row in db.query(KnowledgeRelationEvidence.relation_id)
+        .filter(
+            KnowledgeRelationEvidence.document_id == document_id,
+            KnowledgeRelationEvidence.relation_id.isnot(None),
+        )
+        .all()
+    }
+
+    db.query(KnowledgeRelationCandidate).filter(
+        KnowledgeRelationCandidate.document_id == document_id
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeRelationEvidence).filter(
+        KnowledgeRelationEvidence.document_id == document_id
+    ).delete(synchronize_session=False)
+    db.query(KnowledgePointSource).filter(
+        KnowledgePointSource.document_id == document_id
+    ).delete(synchronize_session=False)
+
+    orphan_point_ids = set()
+    for point_id in point_ids:
+        remaining_source = db.query(KnowledgePointSource.id).filter(
+            KnowledgePointSource.knowledge_point_id == point_id
+        ).first()
+        point = db.query(KnowledgePoint).filter(KnowledgePoint.id == point_id).first()
+        if point and point.origin == "auto" and not remaining_source:
+            orphan_point_ids.add(point_id)
+
+    relation_ids_to_delete = set()
+    for relation_id in direct_relation_ids:
+        remaining_evidence = db.query(KnowledgeRelationEvidence.id).filter(
+            KnowledgeRelationEvidence.relation_id == relation_id
+        ).first()
+        relation = db.query(KnowledgeRelation).filter(KnowledgeRelation.id == relation_id).first()
+        if relation and relation.origin == "auto" and not remaining_evidence:
+            relation_ids_to_delete.add(relation_id)
+
+    if orphan_point_ids:
+        attached_relation_ids = {
+            row.id for row in db.query(KnowledgeRelation.id)
+            .filter(
+                or_(
+                    KnowledgeRelation.source_node_id.in_(orphan_point_ids),
+                    KnowledgeRelation.target_node_id.in_(orphan_point_ids),
+                )
+            )
+            .all()
+        }
+        relation_ids_to_delete.update(attached_relation_ids)
+        db.query(KnowledgeRelationCandidate).filter(
+            or_(
+                KnowledgeRelationCandidate.source_node_id.in_(orphan_point_ids),
+                KnowledgeRelationCandidate.target_node_id.in_(orphan_point_ids),
+            )
+        ).delete(synchronize_session=False)
+
+    relation_payloads = []
+    if relation_ids_to_delete:
+        relations = db.query(KnowledgeRelation).filter(
+            KnowledgeRelation.id.in_(relation_ids_to_delete)
+        ).all()
+        relation_payloads = [
+            {
+                "id": relation.id,
+                "source_id": relation.source_node_id,
+                "target_id": relation.target_node_id,
+                "relation_type": relation.relation_type,
+            }
+            for relation in relations
+        ]
+        db.query(KnowledgeRelationEvidence).filter(
+            KnowledgeRelationEvidence.relation_id.in_(relation_ids_to_delete)
+        ).delete(synchronize_session=False)
+        db.query(KnowledgeRelation).filter(
+            KnowledgeRelation.id.in_(relation_ids_to_delete)
+        ).delete(synchronize_session=False)
+
+    if orphan_point_ids:
+        db.query(KnowledgePoint).filter(
+            KnowledgePoint.id.in_(orphan_point_ids)
+        ).delete(synchronize_session=False)
+
+    return {
+        "relations": relation_payloads,
+        "points": sorted(orphan_point_ids),
+    }
+
+
+def _sync_document_kg_deletes(db: Session, cleanup: dict):
+    from app.common.graph_store import (
+        delete_node as neo4j_delete_node,
+        delete_relation as neo4j_delete_relation,
+    )
+
+    for relation in cleanup.get("relations", []):
+        try:
+            neo4j_delete_relation(
+                relation["source_id"],
+                relation["target_id"],
+                relation["relation_type"],
+            )
+        except Exception as exc:
+            _record_kg_sync_failure(
+                db,
+                "delete",
+                "relation",
+                relation.get("id"),
+                relation,
+                exc,
+            )
+
+    for point_id in cleanup.get("points", []):
+        try:
+            neo4j_delete_node(point_id)
+        except Exception as exc:
+            _record_kg_sync_failure(db, "delete", "node", point_id, {"id": point_id}, exc)
+
+
+def _record_kg_sync_failure(
+    db: Session,
+    operation: str,
+    entity_type: str,
+    entity_id: Optional[int],
+    payload: dict,
+    error: Exception,
+):
+    try:
+        db.add(KgSyncFailure(
+            operation=operation,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+            error_msg=str(error)[:1000],
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()

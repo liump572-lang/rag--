@@ -20,7 +20,7 @@ from app.common.llm_client import chat
 from app.config import settings
 from app.models import (
     Document, KgExtractionBatch, KgExtractionRun, KgRebuild, KgSyncFailure, KnowledgePoint,
-    KnowledgeRelation, KnowledgeRelationCandidate, KnowledgeRelationEvidence, Subject,
+    KnowledgePointSource, KnowledgeRelation, KnowledgeRelationCandidate, KnowledgeRelationEvidence, Subject,
 )
 
 
@@ -80,9 +80,25 @@ class KgService:
         point = db.query(KnowledgePoint).filter(KnowledgePoint.id == point_id).first()
         if not point:
             return False
+        relation_ids = [
+            row.id for row in db.query(KnowledgeRelation.id).filter(
+                (KnowledgeRelation.source_node_id == point_id) | (KnowledgeRelation.target_node_id == point_id)
+            ).all()
+        ]
+        if relation_ids:
+            db.query(KnowledgeRelationEvidence).filter(
+                KnowledgeRelationEvidence.relation_id.in_(relation_ids)
+            ).delete(synchronize_session=False)
+        db.query(KnowledgeRelationCandidate).filter(
+            (KnowledgeRelationCandidate.source_node_id == point_id) |
+            (KnowledgeRelationCandidate.target_node_id == point_id)
+        ).delete(synchronize_session=False)
+        db.query(KnowledgePointSource).filter(
+            KnowledgePointSource.knowledge_point_id == point_id
+        ).delete(synchronize_session=False)
         db.query(KnowledgeRelation).filter(
             (KnowledgeRelation.source_node_id == point_id) | (KnowledgeRelation.target_node_id == point_id)
-        ).delete()
+        ).delete(synchronize_session=False)
         db.delete(point)
         db.commit()
 
@@ -210,6 +226,9 @@ class KgService:
             "target_id": rel.target_node_id,
             "relation_type": rel.relation_type,
         }
+        db.query(KnowledgeRelationEvidence).filter(
+            KnowledgeRelationEvidence.relation_id == relation_id
+        ).delete(synchronize_session=False)
         db.delete(rel)
         db.commit()
 

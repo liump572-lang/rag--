@@ -122,14 +122,17 @@ def add_chunks(chunks: List[dict]) -> List[str]:
     return all_ids
 
 
-def delete_document_chunks(document_id: int):
+def delete_document_chunks(document_id: int, strict: bool = False) -> bool:
     collection = get_or_create_collection()
     try:
         results = collection.get(where={"document_id": document_id})
         if results["ids"]:
             collection.delete(ids=results["ids"])
+        return True
     except Exception:
-        pass
+        if strict:
+            raise
+        return False
 
 
 def search_chunks(
