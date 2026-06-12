@@ -80,6 +80,81 @@ def ensure_kg_schema():
                 INSERT IGNORE INTO system_configs (config_key, config_value, description)
                 VALUES (:key, :value, :description)
             """), {"key": key, "value": value, "description": description})
+    reconcile_kg_document_references()
+
+
+def reconcile_kg_document_references():
+    """Remove historical KG rows that reference documents no longer in the knowledge base."""
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("""
+                DELETE c FROM knowledge_relation_candidates c
+                LEFT JOIN documents d ON d.id = c.document_id
+                WHERE c.document_id IS NOT NULL AND d.id IS NULL
+            """))
+            connection.execute(text("""
+                DELETE e FROM knowledge_relation_evidence e
+                LEFT JOIN documents d ON d.id = e.document_id
+                WHERE d.id IS NULL
+            """))
+            connection.execute(text("""
+                DELETE s FROM knowledge_point_sources s
+                LEFT JOIN documents d ON d.id = s.document_id
+                WHERE d.id IS NULL
+            """))
+            connection.execute(text("""
+                UPDATE kg_extraction_runs r
+                LEFT JOIN documents d ON d.id = r.document_id
+                SET r.status = 'canceled', r.error_msg = '关联文档已删除'
+                WHERE d.id IS NULL AND r.status IN ('queued', 'running')
+            """))
+            connection.execute(text("""
+                UPDATE kg_extraction_batches b
+                LEFT JOIN documents d ON d.id = b.document_id
+                SET b.status = 'stale', b.error_msg = '关联文档已删除'
+                WHERE d.id IS NULL AND b.status IN ('queued', 'dispatched', 'running')
+            """))
+            connection.execute(text("""
+                DELETE r FROM knowledge_relations r
+                WHERE r.origin = 'auto'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM knowledge_relation_evidence e
+                    JOIN documents d ON d.id = e.document_id
+                    WHERE e.relation_id = r.id
+                  )
+            """))
+            connection.execute(text("""
+                DELETE r FROM knowledge_relations r
+                JOIN knowledge_points p
+                  ON p.id = r.source_node_id OR p.id = r.target_node_id
+                WHERE p.origin = 'auto'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM knowledge_point_sources s
+                    JOIN documents d ON d.id = s.document_id
+                    WHERE s.knowledge_point_id = p.id
+                  )
+            """))
+            connection.execute(text("""
+                DELETE c FROM knowledge_relation_candidates c
+                LEFT JOIN knowledge_points s ON s.id = c.source_node_id
+                LEFT JOIN knowledge_points t ON t.id = c.target_node_id
+                WHERE s.id IS NULL OR t.id IS NULL
+            """))
+            connection.execute(text("""
+                DELETE p FROM knowledge_points p
+                WHERE p.origin = 'auto'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM knowledge_point_sources s
+                    JOIN documents d ON d.id = s.document_id
+                    WHERE s.knowledge_point_id = p.id
+                  )
+            """))
+    except OperationalError:
+        # Startup should not fail because a legacy volume is temporarily locked by workers.
+        pass
 
 
 def enqueue_auto_rebuild():

@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session
 
 from app.common.graph_store import (
@@ -111,7 +111,7 @@ class KgService:
 
     @staticmethod
     def list_points(db: Session, subject_id: int = None, keyword: str = None, page: int = 1, size: int = 20):
-        query = db.query(KnowledgePoint)
+        query = KgService._visible_point_query(db)
         if subject_id:
             query = query.filter(KnowledgePoint.subject_id == subject_id)
         if keyword:
@@ -241,7 +241,7 @@ class KgService:
 
     @staticmethod
     def list_relations(db: Session, subject_id: int = None) -> list:
-        query = db.query(KnowledgeRelation)
+        query = KgService._visible_relation_query(db)
         if subject_id:
             query = query.join(
                 KnowledgePoint,
@@ -309,7 +309,7 @@ class KgService:
             "percentage": round(processed_chunks * 100 / total_chunks) if total_chunks else 0,
             "eta_seconds": max(0, eta_seconds) if eta_seconds is not None else None,
             "documents": documents,
-            "total_nodes": db.query(KnowledgePoint).count(),
+            "total_nodes": KgService._visible_point_query(db).count(),
         }
 
     @staticmethod
@@ -437,7 +437,7 @@ class KgService:
                 return results
         except Exception:
             pass
-        query = db.query(KnowledgePoint)
+        query = KgService._visible_point_query(db)
         if subject_id:
             query = query.filter(KnowledgePoint.subject_id == subject_id)
         return [
@@ -464,6 +464,42 @@ class KgService:
             "title": rel.description or rel.relation_type,
             "description": rel.description,
         }
+
+    @staticmethod
+    def _visible_point_filter():
+        active_source = exists().where(and_(
+            KnowledgePointSource.knowledge_point_id == KnowledgePoint.id,
+            KnowledgePointSource.document_id == Document.id,
+        ))
+        return or_(KnowledgePoint.origin == "manual", active_source)
+
+    @staticmethod
+    def _visible_relation_filter():
+        active_evidence = exists().where(and_(
+            KnowledgeRelationEvidence.relation_id == KnowledgeRelation.id,
+            KnowledgeRelationEvidence.document_id == Document.id,
+        ))
+        return or_(KnowledgeRelation.origin == "manual", active_evidence)
+
+    @staticmethod
+    def _visible_point_query(db: Session):
+        return db.query(KnowledgePoint).filter(KgService._visible_point_filter())
+
+    @staticmethod
+    def _visible_relation_query(db: Session):
+        source_visible = exists().where(and_(
+            KnowledgePoint.id == KnowledgeRelation.source_node_id,
+            KgService._visible_point_filter(),
+        ))
+        target_visible = exists().where(and_(
+            KnowledgePoint.id == KnowledgeRelation.target_node_id,
+            KgService._visible_point_filter(),
+        ))
+        return db.query(KnowledgeRelation).filter(
+            KgService._visible_relation_filter(),
+            source_visible,
+            target_visible,
+        )
 
     @staticmethod
     def _attach_mysql_relation_ids(db: Session, data: dict, subject_id: int = None) -> dict:
@@ -527,14 +563,14 @@ class KgService:
 
     @staticmethod
     def _mysql_subgraph(db: Session, subject_id: int = None, offset: int = 0, size: int = 600) -> dict:
-        point_query = db.query(KnowledgePoint)
+        point_query = KgService._visible_point_query(db)
         if subject_id:
             point_query = point_query.filter(KnowledgePoint.subject_id == subject_id)
         total_nodes = point_query.count()
         points = point_query.order_by(KnowledgePoint.id).offset(offset).limit(size).all()
         point_ids = {point.id for point in points}
 
-        rel_query = db.query(KnowledgeRelation)
+        rel_query = KgService._visible_relation_query(db)
         if subject_id:
             rel_query = rel_query.join(
                 KnowledgePoint,
@@ -565,7 +601,7 @@ class KgService:
         if not keyword:
             return {"nodes": [], "edges": []}
 
-        point_query = db.query(KnowledgePoint)
+        point_query = KgService._visible_point_query(db)
         if subject_id:
             point_query = point_query.filter(KnowledgePoint.subject_id == subject_id)
         matched_points = point_query.filter(KnowledgePoint.name.like(f"%{keyword}%")).all()
@@ -575,7 +611,7 @@ class KgService:
                 "edges": [],
             }
 
-        rel_query = db.query(KnowledgeRelation)
+        rel_query = KgService._visible_relation_query(db)
         if subject_id:
             rel_query = rel_query.join(
                 KnowledgePoint,
@@ -594,7 +630,7 @@ class KgService:
         if not point_ids:
             return {"nodes": [], "edges": []}
 
-        visible_points = db.query(KnowledgePoint).filter(KnowledgePoint.id.in_(point_ids)).all()
+        visible_points = KgService._visible_point_query(db).filter(KnowledgePoint.id.in_(point_ids)).all()
 
         return {
             "nodes": [KgService._node_payload(point) for point in visible_points],
