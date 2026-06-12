@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import OperationalError
 
 from app.database import engine
 
@@ -12,10 +13,14 @@ PREVIOUS_KG_REBUILD_VERSION = "kg-v4-parallel-extraction"
 def ensure_kg_schema():
     """Apply small idempotent schema additions for existing Docker volumes."""
     inspector = inspect(engine)
-    columns = {
-        table: {column["name"] for column in inspector.get_columns(table)}
-        for table in ("documents", "knowledge_points", "knowledge_relations", "kg_extraction_runs")
+    column_info = {
+        table: {column["name"]: column for column in inspector.get_columns(table)}
+        for table in ("documents", "knowledge_points", "knowledge_relations", "kg_extraction_runs", "kg_extraction_batches")
         if inspector.has_table(table)
+    }
+    columns = {
+        table: set(table_columns)
+        for table, table_columns in column_info.items()
     }
     additions = {
         "documents": {
@@ -40,18 +45,25 @@ def ensure_kg_schema():
             for column, definition in table_additions.items():
                 if column not in columns.get(table, set()):
                     connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
-        if inspector.has_table("kg_extraction_runs"):
-            connection.execute(text("""
-                ALTER TABLE kg_extraction_runs
-                MODIFY COLUMN status ENUM('queued','running','success','failed','canceled')
-                NOT NULL DEFAULT 'queued'
-            """))
-        if inspector.has_table("kg_extraction_batches"):
-            connection.execute(text("""
-                ALTER TABLE kg_extraction_batches
-                MODIFY COLUMN status ENUM('queued','dispatched','running','success','failed','stale','canceled')
-                NOT NULL DEFAULT 'queued'
-            """))
+        connection.execute(text("SET SESSION lock_wait_timeout = 3"))
+        try:
+            run_status_type = str(column_info.get("kg_extraction_runs", {}).get("status", {}).get("type", ""))
+            if inspector.has_table("kg_extraction_runs") and "canceled" not in run_status_type:
+                connection.execute(text("""
+                    ALTER TABLE kg_extraction_runs
+                    MODIFY COLUMN status ENUM('queued','running','success','failed','canceled')
+                    NOT NULL DEFAULT 'queued'
+                """))
+            batch_status_type = str(column_info.get("kg_extraction_batches", {}).get("status", {}).get("type", ""))
+            if inspector.has_table("kg_extraction_batches") and "dispatched" not in batch_status_type:
+                connection.execute(text("""
+                    ALTER TABLE kg_extraction_batches
+                    MODIFY COLUMN status ENUM('queued','dispatched','running','success','failed','stale','canceled')
+                    NOT NULL DEFAULT 'queued'
+                """))
+        except OperationalError:
+            # Do not block application startup behind long-running extraction queries.
+            pass
         defaults = {
             "chunk.min_chars": ("120", "文档最小切块大小"),
             "chunk.size": ("512", "文档目标切块大小"),

@@ -219,26 +219,52 @@ def search_graph(
             """
             MATCH (n:KnowledgePoint)-[r]-(m:KnowledgePoint)
             WHERE n.id IN $ids
-            RETURN n.id as node_id, m.name as neighbor_name, r.type as relation_type
+            RETURN n.id as node_id,
+                   n.name as node_name,
+                   m.id as neighbor_id,
+                   m.name as neighbor_name,
+                   r.type as relation_type,
+                   coalesce(r.description, '') as description,
+                   startNode(r).id as source_id,
+                   startNode(r).name as source_name,
+                   endNode(r).id as target_id,
+                   endNode(r).name as target_name
             LIMIT 50
             """,
             {"ids": node_ids},
         )
 
         neighbor_map = {}
+        relation_map = {}
         for row in all_neighbors:
             nid = row["node_id"]
             if nid not in neighbor_map:
                 neighbor_map[nid] = []
+                relation_map[nid] = []
             neighbor_map[nid].append(f"{row['neighbor_name']}({row['relation_type']})")
+            relation_map[nid].append({
+                "source_id": row.get("source_id"),
+                "source_name": row.get("source_name", ""),
+                "target_id": row.get("target_id"),
+                "target_name": row.get("target_name", ""),
+                "relation_type": row.get("relation_type", ""),
+                "description": row.get("description", ""),
+            })
 
         for node in matched_nodes[:top_k]:
             nid = node["id"]
             node_name = node["name"]
             neighbors = neighbor_map.get(nid, [])
+            relations = relation_map.get(nid, [])
             context = f"知识点：{node_name}"
             if neighbors:
                 context += f"；关联知识点：{', '.join(neighbors[:8])}"
+            if relations:
+                relation_text = "；".join(
+                    f"{rel['source_name']} -[{rel['relation_type']}]-> {rel['target_name']}"
+                    for rel in relations[:5]
+                )
+                context += f"；参考关系：{relation_text}"
 
             results.append({
                 "type": "graph",
@@ -246,6 +272,7 @@ def search_graph(
                 "node_id": nid,
                 "node_name": node_name,
                 "neighbors": neighbors,
+                "relations": relations[:8],
                 "score": 0.55,
             })
 
@@ -296,7 +323,10 @@ def fusion_rank(
         results.append({
             "type": "graph",
             "content": r["content"],
+            "node_id": r.get("node_id"),
             "node_name": r.get("node_name", ""),
+            "neighbors": r.get("neighbors", []),
+            "relations": r.get("relations", []),
             "score": round(score, 4),
         })
 

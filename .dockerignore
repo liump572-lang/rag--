@@ -15,3 +15,18 @@ uploads/
 概要设计说明书.docx
 需求说明书.docx
 原型.html
+
+# Claude Code
+.claude/
+.claude-plugin/
+.github/
+MEMORY.md
+CLAUDE.md
+
+# Third-party skills
+ui-ux-pro-max-skill/
+.codebuddy/
+
+# Docker
+docker/.env
+docker/*.sql

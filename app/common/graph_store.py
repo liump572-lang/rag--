@@ -99,12 +99,20 @@ def _node_payload(node: dict) -> dict:
 
 
 def _edge_payload(edge: dict) -> dict:
-    return {
+    payload = {
         "from": edge["source"],
         "to": edge["target"],
         "label": edge.get("type", ""),
         "title": edge.get("description", "") or edge.get("type", ""),
+        "description": edge.get("description", ""),
     }
+    edge_id = edge.get("id") or edge.get("rel_id")
+    if edge_id is not None:
+        payload["id"] = edge_id
+    neo4j_rel_id = edge.get("neo4j_rel_id")
+    if neo4j_rel_id is not None:
+        payload["neo4j_rel_id"] = neo4j_rel_id
+    return payload
 
 
 def get_subgraph(subject_id: int = None, depth: int = 2) -> dict:
@@ -119,7 +127,8 @@ def get_subgraph(subject_id: int = None, depth: int = 2) -> dict:
     if subject_id:
         edge_query += " WHERE a.subject_id = $subject_id AND b.subject_id = $subject_id"
     edge_query += """
-        RETURN a.id as source, a.name as source_name, a.subject_id as source_subject_id,
+        RETURN id(r) as neo4j_rel_id,
+               a.id as source, a.name as source_name, a.subject_id as source_subject_id,
                b.id as target, b.name as target_name, b.subject_id as target_subject_id,
                r.type as type, r.description as description
     """
@@ -180,6 +189,12 @@ def get_search_subgraph(keyword: str, subject_id: int = None, depth: int = 1) ->
         LIMIT 50
     """, params)
 
+    if matched_nodes:
+        return {
+            "nodes": [_node_payload(node) for node in matched_nodes],
+            "edges": [],
+        }
+
     relation_conditions = [
         "(r.type CONTAINS $keyword OR coalesce(r.description, '') CONTAINS $keyword)"
     ]
@@ -191,7 +206,8 @@ def get_search_subgraph(keyword: str, subject_id: int = None, depth: int = 1) ->
         WHERE {relation_where}
         RETURN DISTINCT a.id as source, a.name as source_name, a.subject_id as source_subject_id,
                         b.id as target, b.name as target_name, b.subject_id as target_subject_id,
-                        r.type as type, r.description as description
+                        r.type as type, r.description as description,
+                        id(r) as neo4j_rel_id
         LIMIT 100
     """, params)
 
@@ -199,6 +215,8 @@ def get_search_subgraph(keyword: str, subject_id: int = None, depth: int = 1) ->
     for node in matched_nodes:
         nodes_map[node["id"]] = _node_payload(node)
 
+    edges = []
+    seen_edges = set()
     for edge in matched_edges:
         nodes_map[edge["source"]] = _node_payload({
             "id": edge["source"], "name": edge["source_name"], "subject_id": edge["source_subject_id"],
@@ -206,20 +224,14 @@ def get_search_subgraph(keyword: str, subject_id: int = None, depth: int = 1) ->
         nodes_map[edge["target"]] = _node_payload({
             "id": edge["target"], "name": edge["target_name"], "subject_id": edge["target_subject_id"],
         })
+        key = (edge.get("source"), edge.get("target"), edge.get("type", ""), edge.get("description", ""))
+        if key not in seen_edges:
+            seen_edges.add(key)
+            edges.append(_edge_payload(edge))
 
-    visible_ids = list(nodes_map)
-    if not visible_ids:
-        return {"nodes": [], "edges": []}
-
-    visible_edges = run_query("""
-        MATCH (a:KnowledgePoint)-[r:RELATED]->(b:KnowledgePoint)
-        WHERE a.id IN $ids AND b.id IN $ids
-        RETURN DISTINCT a.id as source, b.id as target, r.type as type, r.description as description
-        LIMIT 100
-    """, {"ids": visible_ids})
     return {
         "nodes": list(nodes_map.values()),
-        "edges": [_edge_payload(edge) for edge in visible_edges],
+        "edges": edges,
     }
 
 

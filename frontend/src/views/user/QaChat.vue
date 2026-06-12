@@ -39,10 +39,31 @@
             </div>
             <div class="msg-bubble">
               <div class="markdown-body" v-html="renderMarkdown(msg.content)"></div>
-              <div class="msg-sources" v-if="msg.role === 'assistant' && msg.sources && getNoteSources(msg.sources).length">
-                <div class="sources-title">📚 参考来源</div>
+              <div class="msg-sources" v-if="msg.role === 'assistant' && hasReferenceSources(msg.sources)">
+                <div class="sources-title">参考依据</div>
+                <div class="source-group" v-if="getDocumentSources(msg.sources).length">
+                  <div class="source-group-title">文档来源</div>
+                  <div v-for="src in getDocumentSources(msg.sources)" :key="`${src.type}-${src.source || src.title || src.content}`" class="source-item">
+                    <span class="source-name">{{ src.source || src.title || src.content || '知识库资料' }}</span>
+                    <span class="source-score" v-if="src.score">相关度 {{ formatScore(src.score) }}</span>
+                  </div>
+                </div>
+                <div class="source-group" v-if="getEntitySources(msg.sources).length">
+                  <div class="source-group-title">参考实体</div>
+                  <div v-for="src in getEntitySources(msg.sources)" :key="`entity-${src.node_id || src.node_name}`" class="source-item entity-source">
+                    <span class="source-name">{{ src.node_name || src.source || '未知实体' }}</span>
+                    <span class="source-author" v-if="src.node_id">ID {{ src.node_id }}</span>
+                  </div>
+                </div>
+                <div class="source-group" v-if="getRelationSources(msg.sources).length">
+                  <div class="source-group-title">参考关系</div>
+                  <div v-for="src in getRelationSources(msg.sources)" :key="`relation-${src.source_id || src.source_name}-${src.target_id || src.target_name}-${src.relation_type}`" class="source-item relation-source">
+                    <span class="source-name">{{ formatRelationSource(src) }}</span>
+                    <span class="source-author" v-if="src.description">{{ src.description }}</span>
+                  </div>
+                </div>
                 <div class="source-group" v-if="getOwnNoteSources(msg.sources).length">
-                  <div class="source-group-title">📋 我的心得</div>
+                  <div class="source-group-title">我的心得</div>
                   <div v-for="src in getOwnNoteSources(msg.sources)" :key="src.title" class="source-item own-note">
                     <span class="source-name">{{ src.title || '无标题' }}</span>
                     <el-tag :type="noteStatusTagType(src.status)" size="small">{{ noteStatusLabel(src.status) }}</el-tag>
@@ -50,7 +71,7 @@
                   </div>
                 </div>
                 <div class="source-group" v-if="getOtherNoteSources(msg.sources).length">
-                  <div class="source-group-title">🌍 他人的心得</div>
+                  <div class="source-group-title">他人的心得</div>
                   <div v-for="src in getOtherNoteSources(msg.sources)" :key="src.title" class="source-item">
                     <span class="source-name">{{ src.title || '无标题' }}</span>
                     <span class="source-author">{{ src.author || '未知用户' }}</span>
@@ -430,9 +451,41 @@ function scheduleMermaid() {
   nextTick(() => initializeMermaid(messagesRef.value))
 }
 
+function hasReferenceSources(sources) {
+  return Array.isArray(sources) && sources.length > 0
+}
+
+function getDocumentSources(sources) {
+  if (!sources || !Array.isArray(sources)) return []
+  return sources.filter(s => ['knowledge', 'exam'].includes(s.type))
+}
+
+function getEntitySources(sources) {
+  if (!sources || !Array.isArray(sources)) return []
+  return sources.filter(s => s.type === 'entity')
+}
+
+function getRelationSources(sources) {
+  if (!sources || !Array.isArray(sources)) return []
+  return sources.filter(s => s.type === 'relation')
+}
+
 function getNoteSources(sources) {
   if (!sources || !Array.isArray(sources)) return []
   return sources.filter(s => s.type === 'note')
+}
+
+function formatScore(score) {
+  const value = Number(score)
+  if (!Number.isFinite(value)) return ''
+  return `${Math.round(value * 100)}%`
+}
+
+function formatRelationSource(src) {
+  const source = src.source_name || src.source || '未知实体'
+  const target = src.target_name || '未知实体'
+  const type = src.relation_type || src.label || 'RELATED'
+  return `${source} -[${type}]-> ${target}`
 }
 
 function getOwnNoteSources(sources) {
@@ -565,8 +618,22 @@ function noteStatusLabel(status) {
 .source-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(255,255,255,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 12px; }
 .source-item .source-name { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-item .source-author { color: var(--text3); font-size: 11px; }
+.source-item .source-score { color: var(--primary); font-size: 11px; flex-shrink: 0; }
 .source-item .reject-reason { color: var(--danger); font-size: 11px; }
 .source-item.own-note { border-left: 3px solid var(--primary); }
+.source-item.entity-source { border-left: 3px solid #06b6d4; }
+.source-item.relation-source {
+  align-items: flex-start;
+  border-left: 3px solid #a78bfa;
+  flex-direction: column;
+  gap: 3px;
+}
+.source-item.relation-source .source-author {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chat-list-header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 14px 16px; border-bottom: 1px solid var(--border);

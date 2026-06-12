@@ -2,14 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# ── System deps (cached layer) ──
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Python deps (cached unless requirements.txt changes) ──
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ── App source ──
 COPY . .
 
+# Default queue; overridden in compose for kg-worker
 CMD ["celery", "-A", "app.tasks.celery_app", "worker", "-l", "info", "-Q", "parse_queue"]

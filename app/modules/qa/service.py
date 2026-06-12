@@ -21,6 +21,92 @@ class QaService:
     HISTORY_LIMIT = 12
 
     @staticmethod
+    def _build_reference_sources(contexts: list) -> list:
+        safe_sources = []
+        seen_documents = set()
+        seen_entities = set()
+        seen_relations = set()
+
+        for s in (contexts or [])[:15]:
+            source_type = s.get("type", "")
+            if source_type == "knowledge":
+                name = s.get("source", "") or "知识库文档"
+                key = ("knowledge", name, s.get("content", "")[:80])
+                if key in seen_documents:
+                    continue
+                seen_documents.add(key)
+                safe_sources.append({
+                    "type": "knowledge",
+                    "content": s.get("content", "")[:220],
+                    "source": name,
+                    "score": s.get("score", 0),
+                })
+            elif source_type == "exam":
+                key = ("exam", s.get("content", "")[:120])
+                if key in seen_documents:
+                    continue
+                seen_documents.add(key)
+                safe_sources.append({
+                    "type": "exam",
+                    "content": s.get("content", "")[:220],
+                    "answer": s.get("answer", "")[:120],
+                    "analysis": s.get("analysis", "")[:160],
+                    "score": s.get("score", 0),
+                    "question_type": s.get("question_type", ""),
+                })
+            elif source_type == "note":
+                key = ("note", s.get("title", ""), s.get("user_id"))
+                if key in seen_documents:
+                    continue
+                seen_documents.add(key)
+                safe_sources.append({
+                    "type": "note",
+                    "content": s.get("content", "")[:220],
+                    "title": s.get("title", ""),
+                    "author": s.get("author", ""),
+                    "user_id": s.get("user_id"),
+                    "status": s.get("status", "published"),
+                    "reject_reason": s.get("reject_reason", ""),
+                    "score": s.get("score", 0),
+                })
+            elif source_type == "graph":
+                node_id = s.get("node_id")
+                node_name = s.get("node_name", "")
+                if node_name:
+                    key = node_id or node_name
+                    if key not in seen_entities:
+                        seen_entities.add(key)
+                        safe_sources.append({
+                            "type": "entity",
+                            "node_id": node_id,
+                            "node_name": node_name,
+                            "content": s.get("content", "")[:220],
+                            "score": s.get("score", 0),
+                        })
+
+                for rel in s.get("relations", [])[:5]:
+                    rel_key = (
+                        rel.get("source_id") or rel.get("source_name", ""),
+                        rel.get("target_id") or rel.get("target_name", ""),
+                        rel.get("relation_type", ""),
+                    )
+                    if rel_key in seen_relations:
+                        continue
+                    seen_relations.add(rel_key)
+                    safe_sources.append({
+                        "type": "relation",
+                        "source_id": rel.get("source_id"),
+                        "source_name": rel.get("source_name", ""),
+                        "target_id": rel.get("target_id"),
+                        "target_name": rel.get("target_name", ""),
+                        "relation_type": rel.get("relation_type", ""),
+                        "description": rel.get("description", ""),
+                        "score": s.get("score", 0),
+                    })
+
+        return safe_sources[:20]
+
+    @staticmethod
     def get_or_create_conversation(
         db: Session,
         user_id: int,
@@ -169,23 +255,7 @@ class QaService:
                     cleaned += "\n\n> [回答中断：" + stream_error + "]"
                 final_content = cleaned.strip() or "(模型未返回有效回答)"
 
-                safe_sources = []
-                for s in (contexts[:5] if contexts else []):
-                    source = {
-                        "type": s.get("type", ""),
-                        "content": s.get("content", "")[:200],
-                        "source": s.get("source", s.get("node_name", "")),
-                        "score": s.get("score", 0),
-                    }
-                    if s.get("type") == "note":
-                        source.update({
-                            "title": s.get("title", ""),
-                            "author": s.get("author", ""),
-                            "user_id": s.get("user_id"),
-                            "status": s.get("status", "published"),
-                            "reject_reason": s.get("reject_reason", ""),
-                        })
-                    safe_sources.append(source)
+                safe_sources = QaService._build_reference_sources(contexts)
 
                 assistant_msg = QaService.save_message(
                     save_db, conv.id, "assistant", final_content,

@@ -198,6 +198,18 @@ def ai_review_all_pending(
         return error_response(500, f"AI批量审核出错：{str(e)}")
 
 
+@router.post("/admin/review/batch")
+def batch_review(
+    body: BatchReviewInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        return error_response(403, "无权限")
+    results = NotesService.batch_review(db, body.ids, body.action, body.reject_reason)
+    return success_response(data=results)
+
+
 @router.post("/admin/review/{note_id}")
 def review_note(
     note_id: int,
@@ -211,18 +223,6 @@ def review_note(
     if not note:
         return error_response(404, "心得不存在")
     return success_response(data=NoteResponse.model_validate(note).model_dump())
-
-
-@router.post("/admin/review/batch")
-def batch_review(
-    body: BatchReviewInput,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    if current_user.role != "admin":
-        return error_response(403, "无权限")
-    results = NotesService.batch_review(db, body.ids, body.action, body.reject_reason)
-    return success_response(data=results)
 
 
 @router.post("/admin/pin/{note_id}")

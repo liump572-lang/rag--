@@ -1,24 +1,9 @@
 <template>
   <div class="kg-page">
-    <el-card class="kg-toolbar">
-      <el-form :model="filter" inline>
-        <el-form-item label="科目">
-          <el-select v-model="filter.subject_id" placeholder="全部" clearable style="width:140px" @change="fetchGraph">
-            <el-option v-for="s in subjects" :key="s.id" :label="s.name" :value="s.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="搜索">
-          <el-input v-model="filter.keyword" placeholder="搜索实体或关系..." clearable style="width:200px" @keyup.enter="handleSearch" @clear="handleClearSearch" />
-        </el-form-item>
-        <el-form-item>
-          <el-button @click="refreshGraph">刷新图谱</el-button>
-          <el-button type="primary" @click="showAddNode">+ 手动添加</el-button>
-          <el-button type="success" @click="showAddEdge">添加关系</el-button>
-          <el-button type="warning" @click="showGenerateDoc">生成文档</el-button>
-          <el-button @click="openCandidateDrawer">候选关系审核</el-button>
-        </el-form-item>
-      </el-form>
-    </el-card>
+    <div class="kg-hero">
+      <h2>知识图谱可视化</h2>
+      <p>探索实体与关系的知识网络</p>
+    </div>
 
     <el-card v-if="rebuildStatus.status !== 'not_started'" class="rebuild-status">
       <div class="rebuild-summary">
@@ -61,35 +46,34 @@
     <div class="kg-body">
       <div class="graph-wrapper">
         <el-card class="graph-container" v-loading="loading">
+          <div class="graph-search-card">
+            <el-select v-model="filter.subject_id" placeholder="全部科目" clearable class="graph-subject" @change="fetchGraph">
+              <el-option v-for="s in subjects" :key="s.id" :label="s.name" :value="s.id" />
+            </el-select>
+            <el-input
+              v-model="filter.keyword"
+              placeholder="搜索实体或关系..."
+              clearable
+              class="graph-search-input"
+              @keyup.enter="handleSearch"
+              @clear="handleClearSearch"
+            />
+            <el-button @click="refreshGraph">刷新</el-button>
+          </div>
+          <div class="graph-action-card">
+            <el-button type="primary" @click="showAddNode">新增实体</el-button>
+            <el-button type="success" @click="showAddEdge">新增关系</el-button>
+            <el-button type="warning" @click="showGenerateDoc">生成文档</el-button>
+            <el-button @click="openCandidateDrawer">候选审核</el-button>
+          </div>
           <div ref="graphRef" class="graph-canvas"></div>
           <el-empty v-if="!loading && graphData.nodes.length === 0" description="暂无图谱数据，请先导入种子数据" />
-          <div class="graph-hint">滚轮缩放 · 拖拽平移 · 点击节点查看详情</div>
-          <div v-if="!isSearchMode && graphPageInfo.total_nodes" class="graph-load-panel">
-            <span>
-              已缓存 {{ graphData.nodes.length }} / {{ graphPageInfo.total_nodes }} 个节点，
-              当前显示 {{ graphData.edges.length }} / {{ graphPageInfo.total_edges || 0 }} 条关系
-            </span>
-            <el-button
-              v-if="graphPageInfo.has_more"
-              size="small"
-              type="primary"
-              plain
-              :loading="loadingMoreGraph"
-              @click="loadMoreGraph"
-            >加载更多</el-button>
-          </div>
+          <div class="graph-hint">滚轮缩放 · 拖动画布 · 双击重置视图 · Neo4j 风格布局</div>
         </el-card>
-        <div class="graph-legend">
-          <div class="legend-title">关系</div>
-          <div v-for="(cfg, type) in edgeTypeConfig" :key="type" class="legend-item">
-            <span class="legend-dot" :style="{ background: cfg.color }"></span>
-            <span class="legend-label">{{ cfg.label }}</span>
-          </div>
-        </div>
       </div>
       <el-card class="detail-panel">
         <template #header>
-          <span>{{ selectedNode ? '节点详情' : '图谱信息' }}</span>
+          <span>{{ selectedNode ? '节点详情' : '图例' }}</span>
         </template>
         <div v-if="selectedNode">
           <div class="detail-name">{{ selectedNode.label }}</div>
@@ -111,14 +95,20 @@
           </div>
         </div>
         <div v-else>
-          <div class="stat-item"><span class="stat-num">{{ rebuildStatus.total_nodes ?? graphData.nodes.length }}</span><span class="stat-label">数据库总节点数</span></div>
-          <div class="stat-item"><span class="stat-num">{{ graphData.nodes.length }}</span><span class="stat-label">当前画布节点数</span></div>
-          <div class="stat-item"><span class="stat-num">{{ graphData.edges.length }}</span><span class="stat-label">关系数</span></div>
-          <div v-if="!isSearchMode && graphPageInfo.has_more" class="stat-tip">为避免卡顿，图谱已分包缓存，可继续加载更多节点。</div>
-          <div v-if="filter.keyword && highlightedNodes.size" class="stat-item" style="color:#f59e0b">
-            <span class="stat-num" style="color:#f59e0b">{{ highlightedNodes.size }}</span><span class="stat-label">匹配节点</span>
+          <div class="graph-legend">
+            <div v-for="(cfg, type) in edgeTypeConfig" :key="type" class="legend-item">
+              <span class="legend-dot" :style="{ background: cfg.color }"></span>
+              <span class="legend-label">{{ cfg.label }}</span>
+            </div>
           </div>
-          <p v-if="!filter.keyword" style="color:#94a3b8;font-size:12px;margin-top:12px">选择节点查看详情</p>
+          <div class="side-actions">
+            <el-button type="primary" size="small" @click="showAddNode">+ 新增实体</el-button>
+            <el-button type="success" size="small" @click="showAddEdge">新增关系</el-button>
+          </div>
+          <div class="stat-item"><span class="stat-num">{{ rebuildStatus.total_nodes ?? graphData.nodes.length }}</span><span class="stat-label">数据库总节点数</span></div>
+          <div class="stat-item"><span class="stat-num">{{ graphData.nodes.length }}</span><span class="stat-label">当前显示节点</span></div>
+          <div class="stat-item"><span class="stat-num">{{ graphData.edges.length }}</span><span class="stat-label">关系数</span></div>
+          <p style="color:#94a3b8;font-size:12px;margin-top:12px">点击节点查看详情 · 双击画布重置视图</p>
         </div>
       </el-card>
     </div>
@@ -233,7 +223,6 @@
     </el-drawer>
   </div>
 </template>
-
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { ElMessage, ElNotification } from 'element-plus'
@@ -243,16 +232,13 @@ import { getSubgraph, searchSubgraph, createPoint, updatePoint, deletePoint, cre
 import { getSubjects } from '@/api/subjects'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 
+// ── State ──
 const graphRef = ref(null)
 const loading = ref(false)
 const subjects = ref([])
 const filter = ref({ subject_id: null, keyword: '' })
 const graphData = ref({ nodes: [], edges: [] })
-const graphPageInfo = ref({ total_nodes: 0, total_edges: 0, next_offset: 0, has_more: false })
-const loadingMoreGraph = ref(false)
 const selectedNode = ref(null)
-const highlightedNodes = ref(new Set())
-const isSearchMode = ref(false)
 const nodeRelations = ref([])
 const rebuildStatus = ref({ status: 'not_started', total_documents: 0, completed_documents: 0, failed_documents: 0 })
 const retryingRebuild = ref(false)
@@ -262,16 +248,10 @@ const candidates = ref([])
 const candidatePage = ref(1)
 const candidateSize = 20
 const candidateTotal = ref(0)
-let network = null
-let renderedGraphSignature = ''
-let clampGraphView = null
-let refreshVisibleLabelsTimer = null
 const GRAPH_PAGE_SIZE = 300
-const LABEL_VISIBILITY_PADDING = 80
-const MAX_VISIBLE_NODE_LABELS = 100
-const MAX_VISIBLE_EDGE_LABELS = 40
-const graphCache = new Map()
+let network = null
 
+// ── Edge type config ──
 const edgeTypeConfig = {
   PREREQUISITE: { color: '#f472b6', dashes: 'dashed', label: '前置条件' },
   NEXT:         { color: '#38bdf8', dashes: 'solid',  label: '后继' },
@@ -281,6 +261,7 @@ const edgeTypeConfig = {
   EXAMINED_IN:  { color: '#fb923c', dashes: 'dotted', label: '考点' },
 }
 
+// ── Node CRUD state ──
 const nodeDialog = ref(false)
 const isEditNode = ref(false)
 const saving = ref(false)
@@ -291,19 +272,56 @@ const nodeRules = {
   subject_id: [{ required: true, message: '请选择科目', trigger: 'change' }],
 }
 
+// ── Edge CRUD state ──
 const edgeDialog = ref(false)
 const isEditEdge = ref(false)
 const edgeForm = ref({ source_id: null, target_id: null, relation_type: 'RELATED', description: '' })
 
+// ── Gen doc state ──
 const genDocDialog = ref(false)
 const genDocLoading = ref(false)
 const genDocForm = ref({ subject_id: null, doc_type: 'study_guide' })
 
+// ── Neo4j Browser-like palette for node groups on dark canvas ──
+const GROUP_COLORS = [
+  { bg: '#22d3ee', border: '#67e8f9', highlight: '#a5f3fc', text: '#e0f2fe' },
+  { bg: '#60a5fa', border: '#93c5fd', highlight: '#bfdbfe', text: '#dbeafe' },
+  { bg: '#34d399', border: '#86efac', highlight: '#bbf7d0', text: '#dcfce7' },
+  { bg: '#fbbf24', border: '#fde68a', highlight: '#fef3c7', text: '#fef9c3' },
+  { bg: '#a78bfa', border: '#c4b5fd', highlight: '#ddd6fe', text: '#ede9fe' },
+  { bg: '#fb7185', border: '#fda4af', highlight: '#fecdd3', text: '#ffe4e6' },
+  { bg: '#f472b6', border: '#f9a8d4', highlight: '#fbcfe8', text: '#fce7f3' },
+  { bg: '#94a3b8', border: '#cbd5e1', highlight: '#e2e8f0', text: '#f1f5f9' },
+]
+
+function getGroupColor(group) {
+  return GROUP_COLORS[parseInt(group) % GROUP_COLORS.length] || GROUP_COLORS[0]
+}
+
+function getEdgeStyle(type) {
+  const cfg = edgeTypeConfig[type] || { color: '#94a3b8', dashes: 'solid' }
+  return {
+    color: cfg.color,
+    dashes: cfg.dashes === 'dashed' ? [10, 6] : cfg.dashes === 'dotted' ? [3, 6] : false,
+    opacity: 0.42,
+  }
+}
+
+// ── Degree computation ──
+function computeDegree(data = graphData.value) {
+  const deg = {}
+  for (const e of data.edges) {
+    deg[e.from] = (deg[e.from] || 0) + 1
+    deg[e.to] = (deg[e.to] || 0) + 1
+  }
+  return deg
+}
+
+const renderEdgeCount = computed(() => graphData.value.edges.length)
+
+// ── Lifecycle ──
 const { refresh: autoRefresh, stopPolling: stopAutoRefresh, startPolling: startAutoRefresh } = useAutoRefresh(() => {
   fetchRebuildStatus()
-  if (!isSearchMode.value && graphData.value.nodes.length > 0) {
-    fetchGraph(true)
-  }
 }, 30000)
 
 onMounted(() => {
@@ -313,6 +331,22 @@ onMounted(() => {
   window.addEventListener('resize', handleResize)
 })
 
+onActivated(() => {
+  if (graphData.value.nodes.length > 0) autoRefresh()
+})
+
+onDeactivated(() => { stopAutoRefresh() })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize)
+  if (network) network.destroy()
+})
+
+function handleResize() {
+  if (network && graphRef.value) network.fit({ animation: false })
+}
+
+// ── Rebuild status ──
 const rebuildPercentage = computed(() => {
   if (rebuildStatus.value.total_chunks) return rebuildStatus.value.percentage || 0
   const total = rebuildStatus.value.total_documents || 0
@@ -328,19 +362,11 @@ function formatEta(seconds) {
 }
 
 const rebuildStatusLabel = computed(() => ({
-  queued: '排队中',
-  running: '重建中',
-  success: '已完成',
-  partial_failed: '部分失败',
-  failed: '失败',
+  queued: '排队中', running: '重建中', success: '已完成', partial_failed: '部分失败', failed: '失败',
 }[rebuildStatus.value.status] || '未开始'))
 
 const rebuildTagType = computed(() => ({
-  queued: 'info',
-  running: 'primary',
-  success: 'success',
-  partial_failed: 'warning',
-  failed: 'danger',
+  queued: 'info', running: 'primary', success: 'success', partial_failed: 'warning', failed: 'danger',
 }[rebuildStatus.value.status] || 'info'))
 
 async function fetchRebuildStatus() {
@@ -358,11 +384,10 @@ async function handleRetryFailedRebuild() {
       ElMessage.success(`已重新排队 ${res.data.queued_documents} 个文档`)
       await fetchRebuildStatus()
     }
-  } finally {
-    retryingRebuild.value = false
-  }
+  } finally { retryingRebuild.value = false }
 }
 
+// ── Candidate review ──
 async function openCandidateDrawer() {
   candidateDrawer.value = true
   candidatePage.value = 1
@@ -377,9 +402,7 @@ async function fetchCandidates() {
       candidates.value = res.data.items || []
       candidateTotal.value = res.data.total || 0
     }
-  } finally {
-    candidateLoading.value = false
-  }
+  } finally { candidateLoading.value = false }
 }
 
 async function reviewCandidate(id, approved) {
@@ -390,88 +413,17 @@ async function reviewCandidate(id, approved) {
   if (approved) refreshGraph()
 }
 
-onActivated(() => {
-  if (graphData.value.nodes.length > 0) autoRefresh()
-})
-
-onDeactivated(() => {
-  stopAutoRefresh()
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', handleResize)
-  if (network) network.destroy()
-})
-
-function handleResize() {
-  if (network && graphRef.value) network.fit({ animation: false })
-}
-
-function graphCacheKey() {
-  return String(filter.value.subject_id || 'all')
-}
-
-function emptyCachedGraph() {
-  return {
-    nodes: [],
-    edges: [],
-    nodeIds: new Set(),
-    edgeIds: new Set(),
-    pageInfo: { total_nodes: 0, total_edges: 0, next_offset: 0, has_more: false },
-  }
-}
-
-function getCachedGraph() {
-  const key = graphCacheKey()
-  if (!graphCache.has(key)) graphCache.set(key, emptyCachedGraph())
-  return graphCache.get(key)
-}
-
-function clearCurrentGraphCache() {
-  graphCache.delete(graphCacheKey())
-}
-
-function mergeGraphPage(cache, data) {
-  for (const node of data.nodes || []) {
-    if (!cache.nodeIds.has(node.id)) {
-      cache.nodeIds.add(node.id)
-      cache.nodes.push(node)
-    }
-  }
-  for (const edge of data.edges || []) {
-    const edgeId = edge.id || `${edge.from}-${edge.to}-${edge.label}`
-    if (!cache.edgeIds.has(edgeId)) {
-      cache.edgeIds.add(edgeId)
-      cache.edges.push({ ...edge, id: edge.id || edgeId })
-    }
-  }
-  cache.pageInfo = {
-    total_nodes: data.total_nodes || cache.nodes.length,
-    total_edges: data.total_edges || cache.edges.length,
-    next_offset: data.next_offset ?? cache.nodes.length,
-    has_more: !!data.has_more,
-  }
-}
-
-async function refreshGraph() {
-  clearCurrentGraphCache()
-  await fetchGraph(false, { force: true })
-}
-
+// ── Data fetching (simplified: no cache, no pagination) ──
 async function fetchSubjects() {
   try {
     const res = await getSubjects()
     if (res.code === 200) {
       subjects.value = res.data.map(s => ({ id: s.id, name: s.name }))
-    } else {
-      ElNotification.error({ title: '获取科目列表失败', message: res.message || '未知错误' })
     }
-  } catch (error) {
-    ElNotification.error({ title: '获取科目列表失败', message: error.message || '网络异常' })
-  }
+  } catch {}
 }
 
-async function fetchGraph(silent = false, options = {}) {
+async function fetchGraph(silent = false) {
   if (!silent) loading.value = true
   try {
     const params = {}
@@ -479,38 +431,23 @@ async function fetchGraph(silent = false, options = {}) {
 
     const keyword = filter.value.keyword.trim()
     if (keyword) {
-      isSearchMode.value = true
       const res = await searchSubgraph({ keyword, ...params })
       if (res.code === 200) {
         if (res.data.error) throw new Error(res.data.error)
         if (res.data.warning) ElMessage.warning(res.data.warning)
-        const data = { nodes: res.data.nodes || [], edges: res.data.edges || [] }
-        highlightedNodes.value = new Set(data.nodes.map(node => node.id))
-        graphData.value = data
+        graphData.value = { nodes: res.data.nodes || [], edges: res.data.edges || [] }
       }
     } else {
-      isSearchMode.value = false
-      highlightedNodes.value = new Set()
-      const cache = getCachedGraph()
-      if (!options.force && cache.nodes.length) {
-        graphData.value = { nodes: cache.nodes, edges: cache.edges }
-        graphPageInfo.value = cache.pageInfo
-      } else {
-        const res = await getSubgraph({ ...params, offset: 0, size: GRAPH_PAGE_SIZE })
-        if (res.code === 200) {
-          if (res.data.error) throw new Error(res.data.error)
-          const freshCache = emptyCachedGraph()
-          mergeGraphPage(freshCache, res.data)
-          graphCache.set(graphCacheKey(), freshCache)
-          graphData.value = { nodes: freshCache.nodes, edges: freshCache.edges }
-          graphPageInfo.value = freshCache.pageInfo
-        }
+      const res = await getSubgraph({ ...params, offset: 0, size: GRAPH_PAGE_SIZE })
+      if (res.code === 200) {
+        if (res.data.error) throw new Error(res.data.error)
+        graphData.value = { nodes: res.data.nodes || [], edges: res.data.edges || [] }
       }
     }
     syncSelectedNode()
     await nextTick()
     await new Promise(r => requestAnimationFrame(r))
-    renderGraph(silent)
+    renderGraph()
   } catch (error) {
     if (!silent) ElMessage.error('获取图谱失败：' + (error.message || '网络异常'))
   } finally {
@@ -518,279 +455,119 @@ async function fetchGraph(silent = false, options = {}) {
   }
 }
 
-// ── Macaron pastel palette: soft, modern, minimalist ──
-const GROUP_COLORS = [
-  { bg: '#f0f9ff', border: '#38bdf8', highlight: '#bae6fd', text: '#0369a1' },   // sky
-  { bg: '#fdf2f8', border: '#f472b6', highlight: '#fbcfe8', text: '#be185d' },   // pink
-  { bg: '#f0fdf4', border: '#4ade80', highlight: '#bbf7d0', text: '#15803d' },   // emerald
-  { bg: '#fffbeb', border: '#fbbf24', highlight: '#fde68a', text: '#b45309' },   // amber
-  { bg: '#faf5ff', border: '#a78bfa', highlight: '#ddd6fe', text: '#6d28d9' },   // violet
-  { bg: '#f0fdfa', border: '#2dd4bf', highlight: '#a7f3d0', text: '#0f766e' },   // teal
-  { bg: '#fff1f2', border: '#fb7185', highlight: '#fecdd3', text: '#be123c' },   // rose
-  { bg: '#fefce8', border: '#eab308', highlight: '#fef08a', text: '#854d0e' },   // yellow
-]
-
-function getGroupColor(group) {
-  return GROUP_COLORS[parseInt(group) % GROUP_COLORS.length] || GROUP_COLORS[0]
+async function refreshGraph() {
+  await fetchGraph()
 }
 
-function getEdgeStyle(type) {
-  const cfg = edgeTypeConfig[type] || { color: '#94a3b8', dashes: 'solid' }
-  return {
-    color: cfg.color,
-    dashes: cfg.dashes === 'dashed' ? [10, 6] : cfg.dashes === 'dotted' ? [3, 6] : false,
-    opacity: 0.7,
-  }
+async function handleSearch() {
+  filter.value.keyword = filter.value.keyword.trim()
+  if (!filter.value.keyword) { await handleClearSearch(); return }
+  await fetchGraph()
 }
 
-function computeDegree() {
-  const deg = {}
-  for (const e of graphData.value.edges) {
-    deg[e.from] = (deg[e.from] || 0) + 1
-    deg[e.to] = (deg[e.to] || 0) + 1
-  }
-  return deg
+function handleClearSearch() {
+  filter.value.keyword = ''
+  fetchGraph()
 }
 
-function graphSignature() {
-  return JSON.stringify({
-    nodes: graphData.value.nodes.map(n => [n.id, n.label, n.group]),
-    edges: graphData.value.edges.map(e => [e.id, e.from, e.to, e.label, e.title]),
-  })
-}
+// ═══════════════════════════════════════════════════════════════
+//  Neo4j-style graph rendering: barnesHut physics with repulsion
+//  between ALL nodes. Labels always visible. No degree limiter.
+// ═══════════════════════════════════════════════════════════════
 
-function destroyNetwork() {
-  if (network) network.destroy()
-  network = null
-  clampGraphView = null
-  if (refreshVisibleLabelsTimer) window.clearTimeout(refreshVisibleLabelsTimer)
-  refreshVisibleLabelsTimer = null
-  renderedGraphSignature = ''
-}
-
-function isPointInViewport(point, container) {
-  return point.x >= -LABEL_VISIBILITY_PADDING &&
-    point.x <= container.clientWidth + LABEL_VISIBILITY_PADDING &&
-    point.y >= -LABEL_VISIBILITY_PADDING &&
-    point.y <= container.clientHeight + LABEL_VISIBILITY_PADDING
-}
-
-function updateVisibleLabels() {
-  if (!network || !graphRef.value || graphData.value.nodes.length <= 350) return
-  const container = graphRef.value
-  const positions = network.getPositions()
-  const degree = computeDegree()
-  const selectedIds = new Set(network.getSelectedNodes?.() || [])
-  const visibleNodes = []
-
-  for (const node of graphData.value.nodes) {
-    const position = positions[node.id]
-    if (!position) continue
-    const point = network.canvasToDOM(position)
-    if (!isPointInViewport(point, container) && !highlightedNodes.value.has(node.id) && !selectedIds.has(node.id)) continue
-    visibleNodes.push({
-      id: node.id,
-      label: node.label,
-      score: (highlightedNodes.value.has(node.id) ? 10000 : 0) + (selectedIds.has(node.id) ? 20000 : 0) + (degree[node.id] || 0),
-    })
-  }
-
-  visibleNodes.sort((a, b) => b.score - a.score)
-  const visibleLabelIds = new Set(visibleNodes.slice(0, MAX_VISIBLE_NODE_LABELS).map(node => node.id))
-  const nodeUpdates = graphData.value.nodes.map(node => ({
-    id: node.id,
-    label: visibleLabelIds.has(node.id) ? node.label : '',
-  }))
-  network.body.data.nodes.update(nodeUpdates)
-
-  const visibleEdges = []
-  for (const edge of graphData.value.edges) {
-    const from = positions[edge.from]
-    const to = positions[edge.to]
-    if (!from || !to) continue
-    const midpoint = network.canvasToDOM({ x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 })
-    if (!isPointInViewport(midpoint, container)) continue
-    visibleEdges.push({
-      id: edge.id,
-      label: edgeTypeConfig[edge.label]?.label || edge.label,
-      score: (degree[edge.from] || 0) + (degree[edge.to] || 0),
-    })
-  }
-
-  visibleEdges.sort((a, b) => b.score - a.score)
-  const visibleEdgeLabelIds = new Set(visibleEdges.slice(0, MAX_VISIBLE_EDGE_LABELS).map(edge => edge.id))
-  const edgeUpdates = graphData.value.edges.map(edge => ({
-    id: edge.id,
-    label: visibleEdgeLabelIds.has(edge.id) ? (edgeTypeConfig[edge.label]?.label || edge.label) : '',
-  }))
-  network.body.data.edges.update(edgeUpdates)
-}
-
-function scheduleVisibleLabelRefresh(delay = 80) {
-  if (!network || graphData.value.nodes.length <= 350) return
-  if (refreshVisibleLabelsTimer) window.clearTimeout(refreshVisibleLabelsTimer)
-  refreshVisibleLabelsTimer = window.setTimeout(() => {
-    refreshVisibleLabelsTimer = null
-    updateVisibleLabels()
-  }, delay)
-}
-
-function syncSelectedNode() {
-  const selectedId = selectedNode.value?.id
-  if (!selectedId) return
-  const node = graphData.value.nodes.find(item => String(item.id) === String(selectedId))
-  if (!node) {
-    selectedNode.value = null
-    nodeRelations.value = []
-    return
-  }
-  selectedNode.value = node
-  nodeRelations.value = relationsForNode(selectedId)
-}
-
-function relationsForNode(nodeId) {
-  const relations = []
-  for (const edge of graphData.value.edges) {
-    if (String(edge.from) === String(nodeId)) {
-      const target = graphData.value.nodes.find(node => String(node.id) === String(edge.to))
-      if (target) relations.push({
-        id: edge.id,
-        source_id: edge.from,
-        target_id: edge.to,
-        target_name: target.label,
-        relation_type: edge.label,
-        description: edge.description || edge.title || '',
-      })
-    }
-    if (String(edge.to) === String(nodeId)) {
-      const source = graphData.value.nodes.find(node => String(node.id) === String(edge.from))
-      if (source) relations.push({
-        id: edge.id,
-        source_id: edge.from,
-        target_id: edge.to,
-        target_name: source.label,
-        relation_type: edge.label,
-        description: edge.description || edge.title || '',
-      })
-    }
-  }
-  return relations
-}
-
-function subjectName(group) {
-  return subjects.value.find(subject => String(subject.id) === String(group))?.name || group || '未知'
-}
-
-function renderGraph(silent = false) {
+function renderGraph() {
   if (!graphRef.value) return
-  if (!graphData.value.nodes.length) {
-    destroyNetwork()
+  const data = graphData.value
+  if (!data.nodes.length) {
+    if (network) { network.destroy(); network = null }
     return
   }
 
-  const signature = graphSignature()
-  if (silent && signature === renderedGraphSignature) return
-  renderedGraphSignature = signature
+  // Clean previous instance
+  if (network) { network.destroy(); network = null }
 
-  const hl = highlightedNodes.value
-  const degree = computeDegree()
+  const degree = computeDegree(data)
   const maxDeg = Math.max(1, ...Object.values(degree))
-  const largeGraph = graphData.value.nodes.length > 350
 
-  const nodes = graphData.value.nodes.map(n => {
-    const isHl = hl.size && hl.has(n.id)
+  // ── Nodes: Neo4j Browser style circles with degree-based size ──
+  const nodes = data.nodes.map(n => {
     const colors = getGroupColor(n.group || '0')
     const nodeDeg = degree[n.id] || 0
-    const scaledSize = 28 + Math.round((nodeDeg / maxDeg) * 28)
+    const size = 14 + Math.round((nodeDeg / maxDeg) * 26)
 
     return {
       id: n.id,
-      label: largeGraph ? '' : n.label,
+      label: n.label,
       group: n.group || '0',
-      title: '<div style="padding:8px 12px;font-size:13px;line-height:1.6"><b style="color:#334155">' + n.label + '</b><br/><span style="color:#94a3b8;font-size:12px">关联 ' + nodeDeg + ' 个节点</span></div>',
-      size: isHl ? Math.max(scaledSize + 6, 44) : scaledSize,
+      title: `<div style="padding:8px 12px;font-size:13px;line-height:1.6"><b>${n.label}</b><br/><span style="color:#94a3b8;font-size:12px">关联 ${nodeDeg} 个节点</span></div>`,
+      size,
       font: {
-        size: isHl ? 13 : (scaledSize > 42 ? 13 : 11),
+        size: 11,
         color: colors.text,
         face: "'PingFang SC','Microsoft YaHei','Helvetica Neue',Arial,sans-serif",
-        strokeWidth: 2,
-        strokeColor: '#ffffff',
-        bold: isHl ? true : false,
+        strokeWidth: 3,
+        strokeColor: '#0f172a',
       },
-      borderWidth: isHl ? 3 : 2,
-      borderWidthSelected: 3.5,
-      color: isHl
-        ? {
-            background: '#fffbeb',
-            border: '#f59e0b',
-            highlight: { background: '#fef3c7', border: '#d97706' },
-            hover: { background: '#fffbeb', border: '#f59e0b' },
-          }
-        : {
-            background: colors.bg,
-            border: colors.border,
-            highlight: { background: colors.bg, border: colors.border },
-            hover: { background: colors.highlight, border: colors.border },
-          },
-      shadow: {
-        enabled: true,
-        color: 'rgba(0,0,0,0.06)',
-        size: 14,
-        x: 0,
-        y: 3,
+      borderWidth: 2,
+      borderWidthSelected: 4,
+      color: {
+        background: colors.bg,
+        border: colors.border,
+        highlight: { background: colors.highlight, border: colors.border },
+        hover: { background: colors.highlight, border: colors.border },
       },
       shape: 'dot',
-      mass: 1 + nodeDeg * 0.2,
+      mass: 1 + nodeDeg * 0.05,
     }
   })
 
-  const edges = graphData.value.edges.map(e => {
+  // ── Edges: clean subtle lines with arrows ──
+  const edges = data.edges.map(e => {
     const style = getEdgeStyle(e.label)
     return {
       id: e.id,
       from: e.from,
       to: e.to,
-      label: largeGraph ? '' : (edgeTypeConfig[e.label]?.label || e.label),
+      label: edgeTypeConfig[e.label]?.label || e.label,
       title: e.title || e.label,
-      arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
+      arrows: { to: { enabled: true, scaleFactor: 0.5, type: 'arrow' } },
       font: {
-        size: 10,
+        size: 9,
         color: style.color,
         face: "'PingFang SC','Microsoft YaHei',Arial,sans-serif",
         align: 'middle',
-        strokeWidth: 2,
-        strokeColor: '#ffffff',
-        background: 'rgba(255,255,255,0.7)',
+        strokeWidth: 3,
+        strokeColor: '#0f172a',
+        background: 'rgba(15,23,42,0.55)',
       },
-      smooth: { type: 'curvedCW', roundness: 0.15 },
+      smooth: { type: 'dynamic', roundness: 0.08 },
       color: { color: style.color, highlight: style.color, hover: style.color, opacity: style.opacity },
-      width: 1.5,
+      width: 0.8,
       dashes: style.dashes,
-      selectionWidth: 2.5,
-      hoverWidth: 2.5,
+      selectionWidth: 1.8,
+      hoverWidth: 1.8,
     }
   })
 
-  const container = graphRef.value
+  // ── Neo4j-style barnesHut physics: repulsion between ALL nodes ──
   const options = {
     autoResize: false,
-    backgroundColor: 'transparent',
+    backgroundColor: '#0f172a',
     physics: {
-      enabled: !largeGraph,
-      stabilization: { iterations: largeGraph ? 0 : 200, updateInterval: 20 },
-      solver: 'forceAtlas2Based',
-      forceAtlas2Based: {
-        gravitationalConstant: -6500,
-        centralGravity: 0.001,
-        springLength: 900,
-        springConstant: 0.0025,
-        damping: 0.4,
-        avoidOverlap: 2,
+      enabled: true,
+      stabilization: { iterations: 260, updateInterval: 20 },
+      solver: 'barnesHut',
+      barnesHut: {
+        gravitationalConstant: -5200,
+        centralGravity: 0.12,
+        springLength: 260,
+        springConstant: 0.025,
+        damping: 0.42,
+        avoidOverlap: 1.2,
       },
-      maxVelocity: 15,
-      minVelocity: 0.1,
-      timestep: 0.35,
-      wind: { x: 0, y: 0 },
+      maxVelocity: 35,
+      minVelocity: 0.15,
+      timestep: 0.4,
     },
     interaction: {
       hover: true,
@@ -802,175 +579,124 @@ function renderGraph(silent = false) {
       zoomView: true,
       dragView: true,
     },
-    layout: { improvedLayout: true, randomSeed: 42 },
     edges: {
-      color: 'rgba(148,163,184,0.3)',
-      width: 1,
-      smooth: { type: 'curvedCW', roundness: 0.15 },
+      color: 'rgba(148,163,184,0.30)',
+      width: 0.8,
+      smooth: { type: 'dynamic', roundness: 0.08 },
     },
-    groups: {},
     nodes: {
       shape: 'dot',
-      size: 28,
+      size: 18,
       font: {
         size: 11,
-        color: '#475569',
+        color: '#e2e8f0',
         face: "'PingFang SC','Microsoft YaHei','Helvetica Neue',Arial,sans-serif",
-        strokeWidth: 2,
-        strokeColor: '#ffffff',
+        strokeWidth: 3,
+        strokeColor: '#0f172a',
       },
       borderWidth: 2,
-      borderWidthSelected: 3.5,
-      shadow: {
-        enabled: true,
-        color: 'rgba(0,0,0,0.06)',
-        size: 14,
-        x: 0,
-        y: 3,
-      },
+      borderWidthSelected: 4,
     },
   }
 
-  if (network) { network.destroy(); network = null }
+  const container = graphRef.value
   network = new Network(container, { nodes, edges }, options)
 
-  // After physics settles: freeze, fit view, lock canvas boundaries
-  const lockGraphAfterLayout = () => {
-    if (!network) return
-    network.setOptions({ physics: { enabled: false } })
-    network.fit({ animation: false })
+  // ── Events ──
 
-    const PAD = 300
-    const allPos = network.getPositions()
-    let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity
-    for (const id of Object.keys(allPos)) {
-      const p = allPos[id]
-      if (p.x < bxMin) bxMin = p.x
-      if (p.y < byMin) byMin = p.y
-      if (p.x > bxMax) bxMax = p.x
-      if (p.y > byMax) byMax = p.y
-    }
-    const canvasBounds = {
-      minX: bxMin - PAD, minY: byMin - PAD,
-      maxX: bxMax + PAD, maxY: byMax + PAD,
-    }
+  // After stabilization: fit view & keep physics alive
+  network.once('stabilizationIterationsDone', () => {
+    network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } })
+    // Keep physics on so nodes can be repositioned by drag
+  })
 
-    clampGraphView = function clampView() {
-      const scale = network.getScale()
-      const pos = network.getViewPosition()
-      const halfW = container.clientWidth / 2 / scale
-      const halfH = container.clientHeight / 2 / scale
-      let cx = pos.x, cy = pos.y
-      let moved = false
-      if (cx - halfW < canvasBounds.minX) { cx = canvasBounds.minX + halfW; moved = true }
-      if (cx + halfW > canvasBounds.maxX) { cx = canvasBounds.maxX - halfW; moved = true }
-      if (cy - halfH < canvasBounds.minY) { cy = canvasBounds.minY + halfH; moved = true }
-      if (cy + halfH > canvasBounds.maxY) { cy = canvasBounds.maxY - halfH; moved = true }
-      if (moved) network.moveTo({ position: { x: cx, y: cy }, animation: false })
-    }
-
-    network.on('dragEnd', clampGraphView)
-    network.on('zoom', clampGraphView)
-    scheduleVisibleLabelRefresh(0)
-  }
-
-  if (largeGraph) window.setTimeout(lockGraphAfterLayout, 0)
-  else network.once('stabilizationIterationsDone', lockGraphAfterLayout)
-
+  // Click: select node or edge
   network.on('click', (params) => {
     if (params.nodes.length) {
       const nodeId = params.nodes[0]
-      const node = graphData.value.nodes.find(n => n.id === nodeId)
+      const node = data.nodes.find(n => n.id === nodeId)
       selectedNode.value = node || null
       nodeRelations.value = node ? relationsForNode(nodeId) : []
     } else if (params.edges.length) {
       const edgeId = params.edges[0]
-      const edge = graphData.value.edges.find(item => String(item.id) === String(edgeId))
+      const edge = data.edges.find(e => String(e.id) === String(edgeId))
       if (edge) editEdge(edge)
     } else {
       selectedNode.value = null
       nodeRelations.value = []
     }
-    scheduleVisibleLabelRefresh()
   })
 
-  network.on('doubleClick', () => { fitGraph() })
+  // Double click: reset view
+  network.on('doubleClick', () => {
+    network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } })
+  })
+
+  // Drag: re-enable physics so nodes redistribute naturally
   network.on('dragStart', () => {
-    if (graphData.value.nodes.length > 350) {
-      network.body.data.nodes.update(graphData.value.nodes.map(node => ({ id: node.id, label: '' })))
-      network.body.data.edges.update(graphData.value.edges.map(edge => ({ id: edge.id, label: '' })))
-    }
+    network.setOptions({
+      physics: {
+        enabled: true,
+        stabilization: { enabled: false },
+        solver: 'barnesHut',
+        barnesHut: {
+          gravitationalConstant: -5200,
+          centralGravity: 0.12,
+          springLength: 260,
+          springConstant: 0.025,
+          damping: 0.42,
+          avoidOverlap: 1.2,
+        },
+      },
+    })
   })
-  network.on('dragEnd', () => scheduleVisibleLabelRefresh())
-  network.on('zoom', () => scheduleVisibleLabelRefresh())
+
+  // After drag: let it settle then keep physics alive
+  network.on('dragEnd', () => {
+    // Keep physics enabled — nodes will naturally find equilibrium
+    // with real-time repulsion/attraction forces
+  })
 }
 
-function fitGraph() {
-  if (!network) return
-  if (isSearchMode.value && highlightedNodes.value.size) {
-    const ids = Array.from(highlightedNodes.value)
-    network.fit({
-      animation: false,
-      nodes: ids,
-    })
-  } else {
-    network.fit({
-      animation: false,
-    })
-  }
-}
-
-async function loadMoreGraph() {
-  if (loadingMoreGraph.value || isSearchMode.value || !graphPageInfo.value.has_more) return
-  loadingMoreGraph.value = true
-  try {
-    const params = {}
-    if (filter.value.subject_id) params.subject_id = filter.value.subject_id
-    const cache = getCachedGraph()
-    const res = await getSubgraph({
-      ...params,
-      offset: graphPageInfo.value.next_offset || cache.nodes.length,
-      size: GRAPH_PAGE_SIZE,
-    })
-    if (res.code === 200) {
-      if (res.data.error) throw new Error(res.data.error)
-      mergeGraphPage(cache, res.data)
-      graphData.value = { nodes: cache.nodes, edges: cache.edges }
-      graphPageInfo.value = cache.pageInfo
-      syncSelectedNode()
-      await nextTick()
-      await new Promise(r => requestAnimationFrame(r))
-      renderGraph(false)
+// ── Relations for selected node ──
+function relationsForNode(nodeId) {
+  const relations = []
+  for (const edge of graphData.value.edges) {
+    if (String(edge.from) === String(nodeId)) {
+      const target = graphData.value.nodes.find(node => String(node.id) === String(edge.to))
+      if (target) relations.push({
+        id: edge.id, source_id: edge.from, target_id: edge.to,
+        target_name: target.label, relation_type: edge.label,
+        description: edge.description || edge.title || '',
+      })
     }
-  } catch (error) {
-    ElMessage.error('加载更多图谱失败：' + (error.message || '网络异常'))
-  } finally {
-    loadingMoreGraph.value = false
-  }
-}
-
-async function handleSearch() {
-  filter.value.keyword = filter.value.keyword.trim()
-  if (!filter.value.keyword) {
-    await handleClearSearch()
-    return
-  }
-  if (filter.value.keyword) {
-    await fetchGraph()
-    if (highlightedNodes.value.size) {
-      fitGraph()
-    } else {
-      ElMessage.info('未找到匹配的实体')
+    if (String(edge.to) === String(nodeId)) {
+      const source = graphData.value.nodes.find(node => String(node.id) === String(edge.from))
+      if (source) relations.push({
+        id: edge.id, source_id: edge.from, target_id: edge.to,
+        target_name: source.label, relation_type: edge.label,
+        description: edge.description || edge.title || '',
+      })
     }
   }
+  return relations
 }
 
-function handleClearSearch() {
-  filter.value.keyword = ''
-  highlightedNodes.value = new Set()
-  isSearchMode.value = false
-  fetchGraph()
+function syncSelectedNode() {
+  const selectedId = selectedNode.value?.id
+  if (!selectedId) return
+  const node = graphData.value.nodes.find(item => String(item.id) === String(selectedId))
+  if (!node) { selectedNode.value = null; nodeRelations.value = [] }
+  else { selectedNode.value = node; nodeRelations.value = relationsForNode(selectedId) }
 }
+
+function subjectName(group) {
+  return subjects.value.find(subject => String(subject.id) === String(group))?.name || group || '未知'
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Node CRUD
+// ═══════════════════════════════════════════════════════════════
 
 function showAddNode() {
   isEditNode.value = false
@@ -981,12 +707,9 @@ function showAddNode() {
 function editNode(node) {
   isEditNode.value = true
   nodeForm.value = {
-    name: node.label,
-    subject_id: parseInt(node.group) || null,
-    difficulty: 3,
-    description: '',
+    name: node.label, subject_id: parseInt(node.group) || null, difficulty: 3, description: '',
+    _id: node.id,
   }
-  nodeForm.value._id = node.id
   nodeDialog.value = true
 }
 
@@ -1004,9 +727,7 @@ async function handleSaveNode() {
     }
     nodeDialog.value = false
     refreshGraph()
-  } finally {
-    saving.value = false
-  }
+  } finally { saving.value = false }
 }
 
 async function handleDeleteNode(id) {
@@ -1019,31 +740,9 @@ async function handleDeleteNode(id) {
   } catch {}
 }
 
-function showGenerateDoc() {
-  genDocForm.value = { subject_id: filter.value.subject_id, doc_type: 'study_guide' }
-  genDocDialog.value = true
-}
-
-async function handleGenerateDoc() {
-  if (!genDocForm.value.subject_id) {
-    ElMessage.warning('请选择科目')
-    return
-  }
-  genDocLoading.value = true
-  try {
-    const res = await generateDocument(genDocForm.value)
-    if (res.code === 200) {
-      ElMessage.success('文档生成成功，正在解析中...')
-      genDocDialog.value = false
-    } else {
-      ElMessage.error(res.message || '生成失败')
-    }
-  } catch {
-    ElMessage.error('生成失败，请重试')
-  } finally {
-    genDocLoading.value = false
-  }
-}
+// ═══════════════════════════════════════════════════════════════
+//  Edge CRUD
+// ═══════════════════════════════════════════════════════════════
 
 function showAddEdge() {
   isEditEdge.value = false
@@ -1093,9 +792,7 @@ async function handleSaveEdge() {
     }
     edgeDialog.value = false
     refreshGraph()
-  } finally {
-    saving.value = false
-  }
+  } finally { saving.value = false }
 }
 
 async function handleDeleteEdge(id) {
@@ -1105,35 +802,71 @@ async function handleDeleteEdge(id) {
     await deleteRelation(id)
     ElMessage.success('关系已删除')
     await refreshGraph()
-  } finally {
-    saving.value = false
+  } finally { saving.value = false }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Document generation
+// ═══════════════════════════════════════════════════════════════
+
+function showGenerateDoc() {
+  genDocForm.value = { subject_id: filter.value.subject_id, doc_type: 'study_guide' }
+  genDocDialog.value = true
+}
+
+async function handleGenerateDoc() {
+  if (!genDocForm.value.subject_id) {
+    ElMessage.warning('请选择科目')
+    return
   }
+  genDocLoading.value = true
+  try {
+    const res = await generateDocument(genDocForm.value)
+    if (res.code === 200) {
+      ElMessage.success('文档生成成功，正在解析中...')
+      genDocDialog.value = false
+    } else {
+      ElMessage.error(res.message || '生成失败')
+    }
+  } catch {
+    ElMessage.error('生成失败，请重试')
+  } finally { genDocLoading.value = false }
 }
 </script>
-
 <style scoped>
 .kg-page {
   display: flex;
   flex-direction: column;
   height: 100%;
-  gap: 12px;
+  gap: 22px;
   overflow: hidden;
+  color: var(--text);
 }
 
-.kg-toolbar {
+.kg-hero {
   flex-shrink: 0;
-  border: none;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  border-radius: 10px;
+  padding: 6px 0 0;
 }
-.kg-toolbar .el-form { margin-bottom: 0; }
+.kg-hero h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: var(--text);
+}
+.kg-hero p {
+  margin: 10px 0 0;
+  font-size: 15px;
+  color: var(--text2);
+}
 
 .rebuild-status {
   flex-shrink: 0;
-  border: none;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(26, 26, 46, 0.82);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
 }
-
 .rebuild-status :deep(.el-card__body) { padding: 10px 16px; }
 .rebuild-summary {
   display: flex;
@@ -1143,7 +876,7 @@ async function handleDeleteEdge(id) {
   font-size: 12px;
   color: #64748b;
 }
-.rebuild-title { font-weight: 700; color: #334155; }
+.rebuild-title { font-weight: 700; color: var(--text); }
 .rebuild-progress { margin-left: auto; }
 .rebuild-failed { color: #d97706; }
 .rebuild-details { margin-top: 8px; font-size: 12px; color: #64748b; }
@@ -1159,10 +892,11 @@ async function handleDeleteEdge(id) {
 .candidate-source { margin-top:6px; font-size:12px; color:#94a3b8; }
 .candidate-actions { display:flex; gap:8px; margin-top:10px; }
 
+/* ── Layout ── */
 .kg-body {
   flex: 1;
   display: flex;
-  gap: 16px;
+  gap: 20px;
   min-height: 0;
   overflow: hidden;
 }
@@ -1173,27 +907,30 @@ async function handleDeleteEdge(id) {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  gap: 8px;
   overflow: hidden;
 }
 
+/* ── Neo4j-style graph container on the system dark theme ── */
 .graph-container {
   flex: 1;
   position: relative;
   display: flex;
   flex-direction: column;
-  border: none;
-  border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.28);
   overflow: hidden;
   min-height: 0;
+  background: rgba(15, 15, 26, 0.92);
 }
 .graph-container :deep(.el-card__body) {
   flex: 1;
   padding: 0;
   position: relative;
   overflow: hidden;
-  background: #f8fafc;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(14, 165, 233, 0.12), transparent 34%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.92));
 }
 
 .graph-canvas {
@@ -1203,99 +940,102 @@ async function handleDeleteEdge(id) {
 
 .graph-hint {
   position: absolute;
-  bottom: 10px;
+  bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 11px;
-  color: #94a3b8;
+  color: #cbd5e1;
   pointer-events: none;
   z-index: 1;
-  background: rgba(255,255,255,0.7);
+  background: rgba(15, 23, 42, 0.76);
   backdrop-filter: blur(4px);
-  padding: 4px 14px;
+  padding: 4px 16px;
   border-radius: 20px;
   white-space: nowrap;
-  border: 1px solid rgba(203,213,225,0.3);
+  border: 1px solid rgba(148, 163, 184, 0.26);
 }
 
-.graph-load-panel {
+/* ── Floating control cards ── */
+.graph-search-card,
+.graph-action-card {
   position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.86);
-  color: #64748b;
-  font-size: 12px;
-  box-shadow: 0 8px 24px rgba(15,23,42,0.08);
-  backdrop-filter: blur(6px);
-  border: 1px solid rgba(203,213,225,0.45);
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(10px);
+}
+.graph-search-card { top: 22px; left: 22px; }
+.graph-action-card { top: 22px; right: 22px; }
+.graph-subject { width: 118px; }
+.graph-search-input { width: 220px; }
+.graph-search-card :deep(.el-input__wrapper),
+.graph-search-card :deep(.el-select__wrapper) {
+  background: rgba(15, 23, 42, 0.7);
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.24) inset;
+  color: #e2e8f0;
 }
 
 /* ── Legend ── */
 .graph-legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 20px;
-  padding: 10px 18px;
-  background: #fff;
-  border: none;
-  border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  flex-shrink: 0;
-  align-items: center;
-}
-.legend-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  margin-right: 2px;
-  letter-spacing: 0.3px;
+  flex-direction: column;
+  gap: 18px;
+  padding: 6px 0 18px;
+  background: transparent;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
 }
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
 }
 .legend-dot {
-  width: 8px;
-  height: 8px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.legend-label {
-  font-size: 12px;
-  color: #64748b;
-}
+.legend-label { font-size: 15px; color: var(--text2); }
 
 /* ── Detail Panel ── */
 .detail-panel {
-  width: 240px;
+  width: 300px;
   flex-shrink: 0;
-  border: none;
-  border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.28);
+  background: rgba(26, 26, 46, 0.84);
+  overflow: hidden;
 }
 .detail-panel :deep(.el-card__header) {
-  background: transparent;
-  border-bottom: 1px solid #f1f5f9;
-  font-weight: 600;
-  color: #334155;
-  font-size: 14px;
-  padding: 14px 18px;
+  background: rgba(15, 23, 42, 0.66);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  font-weight: 700;
+  color: #e2e8f0;
+  font-size: 18px;
+  padding: 18px 26px;
 }
+.detail-panel :deep(.el-card__body) { padding: 26px; }
+.side-actions {
+  display: flex;
+  gap: 10px;
+  padding: 18px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+}
+.side-actions .el-button { flex: 1; font-weight: 700; }
 .detail-name {
   font-size: 17px;
   font-weight: 700;
-  color: #334155;
+  color: #e2e8f0;
   margin-bottom: 14px;
   padding-bottom: 10px;
-  border-bottom: 2px solid #f1f5f9;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
 }
 .detail-row {
   display: flex;
@@ -1303,56 +1043,45 @@ async function handleDeleteEdge(id) {
   margin-bottom: 8px;
   font-size: 13px;
 }
-.detail-key {
-  color: #94a3b8;
-  flex-shrink: 0;
-  width: 32px;
-  font-weight: 500;
-}
-.detail-val { color: #334155; }
+.detail-key { color: #94a3b8; flex-shrink: 0; width: 32px; font-weight: 500; }
+.detail-val { color: #e2e8f0; }
 .detail-rels {
   margin-top: 14px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
   padding-top: 12px;
 }
 .detail-rels-title {
   font-size: 12px;
   font-weight: 600;
-  color: #64748b;
+  color: #94a3b8;
   margin-bottom: 8px;
 }
 .detail-actions {
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
   display: flex;
   gap: 8px;
 }
 
 .stat-item {
-  text-align: center;
-  padding: 14px 0;
+  text-align: left;
+  padding: 0;
+  margin-top: 12px;
 }
-.stat-item + .stat-item { border-top: 1px solid #f1f5f9; }
+.stat-item + .stat-item { border-top: none; }
 .stat-num {
-  display: block;
-  font-size: 30px;
-  font-weight: 700;
-  color: #334155;
+  display: inline;
+  font-size: 16px;
+  font-weight: 800;
+  color: #e2e8f0;
   line-height: 1.2;
 }
 .stat-label {
-  display: block;
-  font-size: 12px;
+  display: inline;
+  font-size: 16px;
   color: #94a3b8;
-  margin-top: 2px;
-}
-.stat-tip {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 10px 0 0;
-  border-top: 1px solid #f1f5f9;
+  margin-left: 0;
 }
 
 .rel-item {
@@ -1363,10 +1092,10 @@ async function handleDeleteEdge(id) {
   font-size: 12px;
   border-radius: 6px;
   margin-bottom: 4px;
-  background: #f8fafc;
+  background: rgba(15, 23, 42, 0.48);
   transition: background 0.15s;
 }
-.rel-item:hover { background: #f1f5f9; }
+.rel-item:hover { background: rgba(124, 58, 237, 0.18); }
 .rel-dot {
   width: 7px;
   height: 7px;
@@ -1378,13 +1107,13 @@ async function handleDeleteEdge(id) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #334155;
+  color: #e2e8f0;
   font-weight: 500;
 }
 .rel-type {
   font-size: 10px;
-  color: #64748b;
-  background: #f1f5f9;
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.16);
   padding: 1px 6px;
   border-radius: 4px;
   flex-shrink: 0;
@@ -1397,10 +1126,11 @@ async function handleDeleteEdge(id) {
   background: transparent !important;
 }
 .kg-page :deep(.vis-tooltip) {
-  background: #fff !important;
-  border: 1px solid #e2e8f0 !important;
+  background: rgba(30, 41, 59, 0.95) !important;
+  color: #e2e8f0 !important;
+  border: 1px solid rgba(148, 163, 184, 0.2) !important;
   border-radius: 8px !important;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.08) !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15) !important;
   padding: 6px 10px !important;
   font-family: 'PingFang SC','Microsoft YaHei',sans-serif !important;
 }

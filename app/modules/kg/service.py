@@ -402,7 +402,7 @@ class KgService:
         try:
             data = neo4j_get_search_subgraph(keyword, subject_id, depth=1)
             if data.get("nodes") or data.get("edges"):
-                return data
+                return KgService._attach_mysql_relation_ids(db, data, subject_id)
         except Exception as e:
             neo4j_error = str(e)
         data = KgService._mysql_search_subgraph(db, keyword, subject_id)
@@ -445,6 +445,66 @@ class KgService:
             "title": rel.description or rel.relation_type,
             "description": rel.description,
         }
+
+    @staticmethod
+    def _attach_mysql_relation_ids(db: Session, data: dict, subject_id: int = None) -> dict:
+        """Neo4j is the graph query layer, but MySQL relation IDs drive editing."""
+        edges = data.get("edges") or []
+        node_ids = {
+            value
+            for edge in edges
+            for value in (edge.get("from"), edge.get("to"))
+            if value is not None
+        }
+        if not node_ids:
+            return data
+
+        query = db.query(KnowledgeRelation).filter(
+            KnowledgeRelation.source_node_id.in_(node_ids),
+            KnowledgeRelation.target_node_id.in_(node_ids),
+        )
+        if subject_id:
+            query = query.join(
+                KnowledgePoint,
+                KnowledgeRelation.source_node_id == KnowledgePoint.id,
+            ).filter(KnowledgePoint.subject_id == subject_id)
+
+        exact_map = {}
+        type_map = {}
+        for rel in query.all():
+            rel_type = rel.relation_type or ""
+            rel_desc = rel.description or ""
+            exact_map.setdefault((rel.source_node_id, rel.target_node_id, rel_type, rel_desc), rel.id)
+            type_map.setdefault((rel.source_node_id, rel.target_node_id, rel_type), rel.id)
+
+        normalized_edges = []
+        seen_ids = set()
+        for idx, edge in enumerate(edges):
+            rel_type = edge.get("label") or edge.get("relation_type") or ""
+            rel_desc = edge.get("description") or edge.get("title") or ""
+            source_id = edge.get("from")
+            target_id = edge.get("to")
+            mysql_id = exact_map.get((source_id, target_id, rel_type, rel_desc))
+            if mysql_id is None:
+                mysql_id = type_map.get((source_id, target_id, rel_type))
+
+            normalized = dict(edge)
+            normalized["relation_type"] = rel_type
+            normalized["description"] = rel_desc
+            if mysql_id is not None:
+                normalized["id"] = mysql_id
+            elif normalized.get("id") is None:
+                normalized["id"] = f"neo4j:{normalized.get('neo4j_rel_id', idx)}"
+
+            dedup_key = normalized["id"]
+            if dedup_key in seen_ids:
+                dedup_key = f"{dedup_key}:{idx}"
+                normalized["id"] = dedup_key
+            seen_ids.add(dedup_key)
+            normalized_edges.append(normalized)
+
+        data["edges"] = normalized_edges
+        return data
 
     @staticmethod
     def _mysql_subgraph(db: Session, subject_id: int = None, offset: int = 0, size: int = 600) -> dict:
@@ -490,6 +550,11 @@ class KgService:
         if subject_id:
             point_query = point_query.filter(KnowledgePoint.subject_id == subject_id)
         matched_points = point_query.filter(KnowledgePoint.name.like(f"%{keyword}%")).all()
+        if matched_points:
+            return {
+                "nodes": [KgService._node_payload(point) for point in matched_points],
+                "edges": [],
+            }
 
         rel_query = db.query(KnowledgeRelation)
         if subject_id:
@@ -511,15 +576,10 @@ class KgService:
             return {"nodes": [], "edges": []}
 
         visible_points = db.query(KnowledgePoint).filter(KnowledgePoint.id.in_(point_ids)).all()
-        visible_ids = {point.id for point in visible_points}
-        visible_relations = db.query(KnowledgeRelation).filter(
-            KnowledgeRelation.source_node_id.in_(visible_ids),
-            KnowledgeRelation.target_node_id.in_(visible_ids),
-        ).all()
 
         return {
             "nodes": [KgService._node_payload(point) for point in visible_points],
-            "edges": [KgService._edge_payload(rel) for rel in visible_relations],
+            "edges": [KgService._edge_payload(rel) for rel in matched_relations],
         }
 
     @staticmethod
