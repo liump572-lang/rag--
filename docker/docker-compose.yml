@@ -214,8 +214,6 @@ services:
     restart: unless-stopped
     ports:
       - '80:80'
-    volumes:
-      - ../frontend/dist:/usr/share/nginx/html:ro
     depends_on:
       - backend
     healthcheck:

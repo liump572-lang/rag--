@@ -110,6 +110,8 @@ docker compose up -d --build
 
 首次启动会拉取 MySQL、Redis、Neo4j、ChromaDB 等镜像，并构建后端、前端和 Celery 镜像，耗时取决于网络环境。
 
+生产模式下不需要提前在宿主机执行 `npm run build`，前端静态文件会在 `Dockerfile.frontend` 的构建阶段生成并复制到 Nginx 镜像中。
+
 ### 3.4 查看服务状态
 
 ```bash
