@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.config import settings
-from app.database import engine, Base, get_db
+from app.database import engine, Base, get_db, wait_for_database
 from app.common.response import error_response, success_response
 from sqlalchemy import func
 from app.models import Conversation, Document, KnowledgePoint, Subject, StudyNote, User, WrongQuestion
@@ -61,6 +61,7 @@ app.include_router(notification_router, prefix="/api/v1/notifications", tags=["�
 @app.on_event("startup")
 def on_startup():
     """应用启动时执行：自动建表、知识图谱 schema 迁移、触发自动重建任务"""
+    wait_for_database()
     # 根据 ORM 模型自动创建尚不存在的数据表
     Base.metadata.create_all(bind=engine)
     from app.common.schema_migrations import ensure_kg_schema, enqueue_auto_rebuild
