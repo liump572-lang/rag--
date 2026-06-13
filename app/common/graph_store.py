@@ -1,20 +1,25 @@
 from typing import Optional
 
 from neo4j import GraphDatabase
+from neo4j.exceptions import Neo4jError
 
 from app.config import settings
 
 
 _driver = None
+_schema_ready = False
 
 
 def get_driver():
-    global _driver
+    global _driver, _schema_ready
     if _driver is None:
         _driver = GraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password),
         )
+    if not _schema_ready:
+        ensure_schema()
+        _schema_ready = True
     return _driver
 
 
@@ -22,6 +27,31 @@ def run_query(query: str, params: dict = None):
     with get_driver().session() as session:
         result = session.run(query, params or {})
         return [r.data() for r in result]
+
+
+def ensure_schema():
+    query_groups = [
+        [
+            "CREATE CONSTRAINT knowledge_point_id IF NOT EXISTS FOR (n:KnowledgePoint) REQUIRE n.id IS UNIQUE",
+            "CREATE CONSTRAINT knowledge_point_id IF NOT EXISTS ON (n:KnowledgePoint) ASSERT n.id IS UNIQUE",
+        ],
+        [
+            "CREATE INDEX knowledge_point_subject IF NOT EXISTS FOR (n:KnowledgePoint) ON (n.subject_id)",
+            "CREATE INDEX knowledge_point_subject IF NOT EXISTS FOR (n:KnowledgePoint) ON (n.subject_id)",
+        ],
+        [
+            "CREATE INDEX knowledge_point_name IF NOT EXISTS FOR (n:KnowledgePoint) ON (n.name)",
+            "CREATE INDEX knowledge_point_name IF NOT EXISTS FOR (n:KnowledgePoint) ON (n.name)",
+        ],
+    ]
+    with _driver.session() as session:
+        for alternatives in query_groups:
+            for query in alternatives:
+                try:
+                    session.run(query).consume()
+                    break
+                except Neo4jError:
+                    continue
 
 
 def create_node(node_id: int, name: str, subject_id: int, labels: list = None) -> dict:
@@ -34,6 +64,19 @@ def create_node(node_id: int, name: str, subject_id: int, labels: list = None) -
         {"id": node_id, "name": name, "subject_id": subject_id},
     )
     return results[0] if results else {}
+
+
+def upsert_nodes(nodes: list[dict]) -> None:
+    if not nodes:
+        return
+    run_query(
+        """
+        UNWIND $nodes AS row
+        MERGE (n:KnowledgePoint {id: row.id})
+        SET n.name = row.name, n.subject_id = row.subject_id
+        """,
+        {"nodes": nodes},
+    )
 
 
 def update_node(node_id: int, name: str = None, description: str = None) -> bool:
@@ -78,6 +121,22 @@ def create_relation(
     return results[0] if results else {}
 
 
+def upsert_relations(relations: list[dict]) -> None:
+    if not relations:
+        return
+    run_query(
+        """
+        UNWIND $relations AS row
+        MATCH (a:KnowledgePoint {id: row.source_id})
+        MATCH (b:KnowledgePoint {id: row.target_id})
+        MERGE (a)-[r:RELATED {type: row.rel_type}]->(b)
+        SET r.type = row.rel_type,
+            r.description = coalesce(row.description, '')
+        """,
+        {"relations": relations},
+    )
+
+
 def delete_relation(source_id: int, target_id: int, rel_type: str) -> bool:
     run_query(
         """
@@ -87,6 +146,30 @@ def delete_relation(source_id: int, target_id: int, rel_type: str) -> bool:
         {"source_id": source_id, "target_id": target_id, "rel_type": rel_type},
     )
     return True
+
+
+def prune_graph(node_ids: list[int], relations: list[dict]) -> None:
+    run_query(
+        """
+        MATCH (n:KnowledgePoint)
+        WHERE NOT n.id IN $node_ids
+        DETACH DELETE n
+        """,
+        {"node_ids": node_ids},
+    )
+    run_query(
+        """
+        MATCH (a:KnowledgePoint)-[r:RELATED]->(b:KnowledgePoint)
+        WHERE NOT any(
+            rel IN $relations
+            WHERE rel.source_id = a.id
+              AND rel.target_id = b.id
+              AND rel.relation_type = r.type
+        )
+        DELETE r
+        """,
+        {"relations": relations},
+    )
 
 
 def _node_payload(node: dict) -> dict:
@@ -236,7 +319,8 @@ def get_search_subgraph(keyword: str, subject_id: int = None, depth: int = 1) ->
 
 
 def close():
-    global _driver
+    global _driver, _schema_ready
     if _driver:
         _driver.close()
         _driver = None
+        _schema_ready = False

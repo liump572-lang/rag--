@@ -52,6 +52,10 @@ export function getRebuildStatus() {
   return request.get('/kg/rebuild/status')
 }
 
+export function getDocumentExtractionStatus(params) {
+  return request.get('/kg/documents/status', { params })
+}
+
 export function retryFailedRebuildDocuments() {
   return request.post('/kg/rebuild/retry-failed')
 }

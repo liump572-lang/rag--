@@ -81,6 +81,49 @@ def ensure_kg_schema():
                 INSERT IGNORE INTO system_configs (config_key, config_value, description)
                 VALUES (:key, :value, :description)
             """), {"key": key, "value": value, "description": description})
+        indexes = {
+            "documents": [
+                ("idx_documents_parse_status", "parse_status"),
+                ("idx_documents_subject_id", "subject_id"),
+            ],
+            "document_chunks": [
+                ("idx_document_chunks_document_index", "document_id, chunk_index"),
+            ],
+            "knowledge_points": [
+                ("idx_knowledge_points_subject_name", "subject_id, name"),
+                ("idx_knowledge_points_origin", "origin"),
+            ],
+            "knowledge_relations": [
+                ("idx_knowledge_relations_source_type", "source_node_id, target_node_id, relation_type"),
+                ("idx_knowledge_relations_target", "target_node_id"),
+                ("idx_knowledge_relations_origin", "origin"),
+            ],
+            "knowledge_point_sources": [
+                ("idx_knowledge_point_sources_point_document_chunk", "knowledge_point_id, document_id, chunk_id"),
+                ("idx_knowledge_point_sources_document", "document_id"),
+            ],
+            "knowledge_relation_evidence": [
+                ("idx_knowledge_relation_evidence_relation_document_chunk", "relation_id, document_id, chunk_id"),
+                ("idx_knowledge_relation_evidence_document", "document_id"),
+            ],
+            "kg_extraction_runs": [
+                ("idx_kg_extraction_runs_document_version_status", "document_id, version, status"),
+                ("idx_kg_extraction_runs_rebuild_status", "rebuild_id, status"),
+            ],
+            "kg_extraction_batches": [
+                ("idx_kg_extraction_batches_run_status", "run_id, status"),
+                ("idx_kg_extraction_batches_document_status", "document_id, status"),
+                ("idx_kg_extraction_batches_status_created", "status, created_at"),
+            ],
+        }
+        for table, table_indexes in indexes.items():
+            if not inspector.has_table(table):
+                continue
+            for name, columns_sql in table_indexes:
+                try:
+                    connection.execute(text(f"CREATE INDEX {name} ON {table} ({columns_sql})"))
+                except OperationalError:
+                    pass
     reconcile_kg_document_references()
 
 

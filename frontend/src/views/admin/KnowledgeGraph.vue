@@ -5,19 +5,21 @@
       <p>探索实体与关系的知识网络</p>
     </div>
 
-    <el-card v-if="rebuildStatus.status !== 'not_started'" class="rebuild-status">
+    <el-card v-if="documentProgress.documents.length" class="rebuild-status">
       <div class="rebuild-summary">
-        <span class="rebuild-title">图谱全量重建</span>
-        <el-tag :type="rebuildTagType">{{ rebuildStatusLabel }}</el-tag>
+        <span class="rebuild-title">文档图谱抽取</span>
+        <el-tag :type="documentProgressTagType">
+          {{ documentProgressLabel }}
+        </el-tag>
         <span class="rebuild-progress">
-          {{ rebuildStatus.completed_documents || 0 }} / {{ rebuildStatus.total_documents || 0 }} 个文档完成
+          {{ documentProgress.completed_documents || 0 }} / {{ documentProgress.total_documents || 0 }} 个文档完成
         </span>
-        <span v-if="rebuildStatus.total_chunks">
-          {{ rebuildStatus.processed_chunks || 0 }} / {{ rebuildStatus.total_chunks }} 个切块
+        <span>
+          {{ documentProgress.processed_batches || 0 }} / {{ documentProgress.total_batches || 0 }} 个分段
         </span>
-        <span v-if="rebuildStatus.eta_seconds != null">预计剩余 {{ formatEta(rebuildStatus.eta_seconds) }}</span>
-        <span v-if="rebuildStatus.failed_documents" class="rebuild-failed">
-          {{ rebuildStatus.failed_documents }} 个失败
+        <span>{{ documentProgress.visible_entities || 0 }} 个实体 · {{ documentProgress.visible_relations || 0 }} 条关系证据已入图</span>
+        <span v-if="documentProgress.failed_documents" class="rebuild-failed">
+          {{ documentProgress.failed_documents }} 个失败
         </span>
         <el-button
           v-if="rebuildStatus.failed_documents"
@@ -28,15 +30,23 @@
         >重试失败文档</el-button>
       </div>
       <el-progress
-        :percentage="rebuildPercentage"
-        :status="rebuildStatus.status === 'partial_failed' ? 'warning' : undefined"
+        :percentage="documentProgress.percentage || 0"
+        :status="documentProgress.failed_documents ? 'warning' : undefined"
         :stroke-width="6"
       />
-      <details v-if="rebuildStatus.documents?.length" class="rebuild-details">
-        <summary>查看文档级进度</summary>
-        <div v-for="doc in rebuildStatus.documents" :key="doc.document_id" class="rebuild-document">
+      <details class="rebuild-details" open>
+        <summary>
+          查看文档级进度
+          <span v-if="documentProgress.displayed_documents < documentProgress.total_documents">
+            （显示 {{ documentProgress.displayed_documents }} / {{ documentProgress.total_documents }}）
+          </span>
+        </summary>
+        <div v-for="doc in documentProgress.documents" :key="doc.document_id" class="rebuild-document">
           <span class="rebuild-document-title">{{ doc.title || `文档 ${doc.document_id}` }}</span>
-          <span>{{ doc.processed_chunks || 0 }} / {{ doc.total_chunks || 0 }} 切块</span>
+          <el-tag size="small" :type="documentRunTagType(doc.run_status)">{{ documentRunStatusLabel(doc.run_status, doc.parse_status) }}</el-tag>
+          <span>{{ doc.processed_batches || 0 }} / {{ doc.total_batches || 0 }} 分段</span>
+          <span>{{ doc.visible_entities || 0 }} 实体</span>
+          <span>{{ doc.visible_relations || 0 }} 关系证据</span>
           <span>{{ doc.percentage || 0 }}%</span>
           <span v-if="doc.failed_batches" class="rebuild-failed">{{ doc.failed_batches }} 个失败分段</span>
         </div>
@@ -67,7 +77,19 @@
             <el-button @click="openCandidateDrawer">候选审核</el-button>
           </div>
           <div ref="graphRef" class="graph-canvas"></div>
-          <el-empty v-if="!loading && graphData.nodes.length === 0" description="暂无图谱数据，请先导入种子数据" />
+          <div v-if="!filter.keyword && graphMeta.total_nodes" class="graph-load-status">
+            <span>
+              已显示 {{ graphData.nodes.length }} / {{ graphMeta.total_nodes }} 个节点 ·
+              {{ graphData.edges.length }} / {{ graphMeta.total_edges }} 条关系
+            </span>
+            <el-button
+              v-if="graphMeta.has_more"
+              size="small"
+              :loading="loadingMore"
+              @click="loadMoreGraph"
+            >加载更多</el-button>
+          </div>
+          <el-empty v-if="!loading && graphData.nodes.length === 0" :description="emptyGraphDescription" />
           <div class="graph-hint">滚轮缩放 · 拖动画布 · 双击重置视图 · Neo4j 风格布局</div>
         </el-card>
       </div>
@@ -228,7 +250,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, 
 import { ElMessage, ElNotification } from 'element-plus'
 import { Network } from 'vis-network'
 import 'vis-network/styles/vis-network.css'
-import { getSubgraph, searchSubgraph, createPoint, updatePoint, deletePoint, createRelation, updateRelation, deleteRelation, generateDocument, getRebuildStatus, retryFailedRebuildDocuments, getRelationCandidates, approveRelationCandidate, rejectRelationCandidate } from '@/api/kg'
+import { getSubgraph, searchSubgraph, createPoint, updatePoint, deletePoint, createRelation, updateRelation, deleteRelation, generateDocument, getRebuildStatus, getDocumentExtractionStatus, retryFailedRebuildDocuments, getRelationCandidates, approveRelationCandidate, rejectRelationCandidate } from '@/api/kg'
 import { getSubjects } from '@/api/subjects'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 
@@ -238,9 +260,23 @@ const loading = ref(false)
 const subjects = ref([])
 const filter = ref({ subject_id: null, keyword: '' })
 const graphData = ref({ nodes: [], edges: [] })
+const graphMeta = ref({ total_nodes: 0, total_edges: 0, next_offset: 0, has_more: false })
 const selectedNode = ref(null)
 const nodeRelations = ref([])
 const rebuildStatus = ref({ status: 'not_started', total_documents: 0, completed_documents: 0, failed_documents: 0 })
+const documentProgress = ref({
+  documents: [],
+  active_documents: 0,
+  completed_documents: 0,
+  failed_documents: 0,
+  total_documents: 0,
+  displayed_documents: 0,
+  total_batches: 0,
+  processed_batches: 0,
+  visible_entities: 0,
+  visible_relations: 0,
+  percentage: 0,
+})
 const retryingRebuild = ref(false)
 const candidateDrawer = ref(false)
 const candidateLoading = ref(false)
@@ -249,6 +285,7 @@ const candidatePage = ref(1)
 const candidateSize = 20
 const candidateTotal = ref(0)
 const GRAPH_PAGE_SIZE = 300
+const loadingMore = ref(false)
 let network = null
 
 // ── Edge type config ──
@@ -322,17 +359,21 @@ const renderEdgeCount = computed(() => graphData.value.edges.length)
 // ── Lifecycle ──
 const { refresh: autoRefresh, stopPolling: stopAutoRefresh, startPolling: startAutoRefresh } = useAutoRefresh(() => {
   fetchRebuildStatus()
-}, 30000)
+  fetchDocumentProgress()
+  fetchGraph(true)
+}, 15000)
 
 onMounted(() => {
   fetchSubjects()
   fetchGraph()
   fetchRebuildStatus()
+  fetchDocumentProgress()
   window.addEventListener('resize', handleResize)
 })
 
 onActivated(() => {
-  if (graphData.value.nodes.length > 0) autoRefresh()
+  autoRefresh()
+  startAutoRefresh()
 })
 
 onDeactivated(() => { stopAutoRefresh() })
@@ -345,13 +386,6 @@ onBeforeUnmount(() => {
 function handleResize() {
   if (network && graphRef.value) network.fit({ animation: false })
 }
-
-// ── Rebuild status ──
-const rebuildPercentage = computed(() => {
-  if (rebuildStatus.value.total_chunks) return rebuildStatus.value.percentage || 0
-  const total = rebuildStatus.value.total_documents || 0
-  return total ? Math.round(((rebuildStatus.value.completed_documents || 0) / total) * 100) : 0
-})
 
 function formatEta(seconds) {
   if (seconds < 60) return `${seconds} 秒`
@@ -369,11 +403,75 @@ const rebuildTagType = computed(() => ({
   queued: 'info', running: 'primary', success: 'success', partial_failed: 'warning', failed: 'danger',
 }[rebuildStatus.value.status] || 'info'))
 
+const emptyGraphDescription = computed(() => {
+  if (documentProgress.value.active_documents) return '文档图谱正在抽取，完成的分段会逐步显示'
+  if (documentProgress.value.documents.length) return '当前文档还没有可显示的图谱实体'
+  return '暂无图谱数据，请先上传并解析文档'
+})
+const documentProgressTagType = computed(() => {
+  if (documentProgress.value.failed_documents) return 'warning'
+  if (documentProgress.value.active_documents) return 'primary'
+  return 'success'
+})
+const documentProgressLabel = computed(() => {
+  if (documentProgress.value.failed_documents) return '有失败'
+  if (documentProgress.value.active_documents) return '处理中'
+  return '已完成'
+})
+
 async function fetchRebuildStatus() {
   try {
     const res = await getRebuildStatus()
     if (res.code === 200) rebuildStatus.value = res.data
   } catch {}
+}
+
+async function fetchDocumentProgress() {
+  try {
+    const res = await getDocumentExtractionStatus({ limit: 200 })
+    if (res.code === 200) documentProgress.value = {
+      documents: [],
+      active_documents: 0,
+      completed_documents: 0,
+      failed_documents: 0,
+      total_documents: 0,
+      displayed_documents: 0,
+      total_batches: 0,
+      processed_batches: 0,
+      visible_entities: 0,
+      visible_relations: 0,
+      percentage: 0,
+      ...(res.data || {}),
+    }
+  } catch {}
+}
+
+function documentRunStatusLabel(status, parseStatus) {
+  if (parseStatus === 'pending' || parseStatus === 'parsing') return '解析中'
+  if (parseStatus === 'failed') return '解析失败'
+  return ({
+    queued: '排队中',
+    running: '抽取中',
+    finalizing: '整理入图',
+    success: '已入图',
+    failed: '抽取失败',
+    parse_failed: '解析失败',
+    canceled: '已取消',
+    not_started: '待抽取',
+    waiting_parse: '待解析',
+  }[status] || '待抽取')
+}
+
+function documentRunTagType(status) {
+  return ({
+    queued: 'info',
+    running: 'primary',
+    finalizing: 'primary',
+    success: 'success',
+    failed: 'danger',
+    parse_failed: 'danger',
+    canceled: 'warning',
+  }[status] || 'info')
 }
 
 async function handleRetryFailedRebuild() {
@@ -383,6 +481,7 @@ async function handleRetryFailedRebuild() {
     if (res.code === 200) {
       ElMessage.success(`已重新排队 ${res.data.queued_documents} 个文档`)
       await fetchRebuildStatus()
+      await fetchDocumentProgress()
     }
   } finally { retryingRebuild.value = false }
 }
@@ -436,12 +535,24 @@ async function fetchGraph(silent = false) {
         if (res.data.error) throw new Error(res.data.error)
         if (res.data.warning) ElMessage.warning(res.data.warning)
         graphData.value = { nodes: res.data.nodes || [], edges: res.data.edges || [] }
+        graphMeta.value = {
+          total_nodes: graphData.value.nodes.length,
+          total_edges: graphData.value.edges.length,
+          next_offset: 0,
+          has_more: false,
+        }
       }
     } else {
       const res = await getSubgraph({ ...params, offset: 0, size: GRAPH_PAGE_SIZE })
       if (res.code === 200) {
         if (res.data.error) throw new Error(res.data.error)
         graphData.value = { nodes: res.data.nodes || [], edges: res.data.edges || [] }
+        graphMeta.value = {
+          total_nodes: res.data.total_nodes || graphData.value.nodes.length,
+          total_edges: res.data.total_edges || graphData.value.edges.length,
+          next_offset: res.data.next_offset || graphData.value.nodes.length,
+          has_more: Boolean(res.data.has_more),
+        }
       }
     }
     syncSelectedNode()
@@ -457,6 +568,40 @@ async function fetchGraph(silent = false) {
 
 async function refreshGraph() {
   await fetchGraph()
+}
+
+async function loadMoreGraph() {
+  if (filter.value.keyword.trim() || loadingMore.value || !graphMeta.value.has_more) return
+  loadingMore.value = true
+  try {
+    const params = {
+      offset: graphMeta.value.next_offset || graphData.value.nodes.length,
+      size: GRAPH_PAGE_SIZE,
+    }
+    if (filter.value.subject_id) params.subject_id = filter.value.subject_id
+    const res = await getSubgraph(params)
+    if (res.code === 200) {
+      const nodeMap = new Map(graphData.value.nodes.map(node => [String(node.id), node]))
+      for (const node of res.data.nodes || []) nodeMap.set(String(node.id), node)
+      const edgeMap = new Map(graphData.value.edges.map(edge => [String(edge.id), edge]))
+      for (const edge of res.data.edges || []) edgeMap.set(String(edge.id), edge)
+      graphData.value = { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()) }
+      graphMeta.value = {
+        total_nodes: res.data.total_nodes || graphMeta.value.total_nodes,
+        total_edges: res.data.total_edges || graphMeta.value.total_edges,
+        next_offset: res.data.next_offset || graphData.value.nodes.length,
+        has_more: Boolean(res.data.has_more),
+      }
+      syncSelectedNode()
+      await nextTick()
+      await new Promise(r => requestAnimationFrame(r))
+      renderGraph()
+    }
+  } catch (error) {
+    ElMessage.error('加载更多图谱失败：' + (error.message || '网络异常'))
+  } finally {
+    loadingMore.value = false
+  }
 }
 
 async function handleSearch() {
@@ -604,10 +749,10 @@ function renderGraph() {
 
   // ── Events ──
 
-  // After stabilization: fit view & keep physics alive
+  // After stabilization: fit view and stop physics to keep large graphs responsive.
   network.once('stabilizationIterationsDone', () => {
     network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } })
-    // Keep physics on so nodes can be repositioned by drag
+    network.setOptions({ physics: false })
   })
 
   // Click: select node or edge
@@ -651,10 +796,11 @@ function renderGraph() {
     })
   })
 
-  // After drag: let it settle then keep physics alive
+  // After drag: let it settle briefly, then stop the background simulation.
   network.on('dragEnd', () => {
-    // Keep physics enabled — nodes will naturally find equilibrium
-    // with real-time repulsion/attraction forces
+    setTimeout(() => {
+      if (network) network.setOptions({ physics: false })
+    }, 800)
   })
 }
 
@@ -953,6 +1099,23 @@ async function handleGenerateDoc() {
   border-radius: 20px;
   white-space: nowrap;
   border: 1px solid rgba(148, 163, 184, 0.26);
+}
+
+.graph-load-status {
+  position: absolute;
+  left: 22px;
+  bottom: 14px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  color: #cbd5e1;
+  font-size: 12px;
+  backdrop-filter: blur(10px);
 }
 
 /* ── Floating control cards ── */

@@ -216,6 +216,17 @@ def get_rebuild_status(
     return success_response(data=KgService.rebuild_status(db))
 
 
+@router.get("/documents/status")
+def get_document_extraction_status(
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        return error_response(403, "无权限")
+    return success_response(data=KgService.document_extraction_status(db, limit))
+
+
 @router.post("/rebuild/retry-failed")
 def retry_failed_rebuild_documents(
     db: Session = Depends(get_db),

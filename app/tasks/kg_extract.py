@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import and_, exists, or_
 
 from app.common.graph_store import (
-    create_node as neo4j_create_node,
-    create_relation as neo4j_create_relation,
     run_query,
+    upsert_nodes as neo4j_upsert_nodes,
+    upsert_relations as neo4j_upsert_relations,
 )
 from app.common.kg_local_extractor import extract_local_knowledge
 from app.common.llm_client import chat
@@ -44,6 +44,7 @@ def queue_document_extraction_task(document_id: int, run_id: int = None):
             existing_run = db.query(KgExtractionRun).filter(
                 KgExtractionRun.document_id == document_id,
                 KgExtractionRun.version == KG_REBUILD_VERSION,
+                KgExtractionRun.rebuild_id.is_(None),
                 KgExtractionRun.status.in_(("queued", "running")),
             ).order_by(KgExtractionRun.id.desc()).first()
             if existing_run:
@@ -226,11 +227,48 @@ def _refresh_parallel_run(db, run_id: int):
     run = db.query(KgExtractionRun).filter(KgExtractionRun.id == run_id).first()
     if not run or run.status == "canceled":
         return
+    _persist_successful_batches(db, run)
     batches = db.query(KgExtractionBatch).filter(KgExtractionBatch.run_id == run_id).all()
     run.processed_batches = sum(batch.status in {"success", "failed", "stale"} for batch in batches)
     db.commit()
     if batches and all(batch.status in {"success", "failed", "stale", "canceled"} for batch in batches):
         finalize_document_extraction_task.delay(run_id)
+
+
+def _persist_successful_batches(db, run: KgExtractionRun):
+    """Persist completed batch payloads immediately so large documents appear in the graph incrementally."""
+    doc = db.query(Document).filter(Document.id == run.document_id).first()
+    if not doc or doc.parse_status != "success":
+        return
+    subject = db.query(Subject).filter(Subject.id == doc.subject_id).first()
+    subject_name = subject.name if subject else "未知"
+    from app.common.kg_settings import get_kg_settings
+    kg_settings = get_kg_settings(db)
+
+    batches = db.query(KgExtractionBatch).filter(
+        KgExtractionBatch.run_id == run.id,
+        KgExtractionBatch.status == "success",
+    ).order_by(KgExtractionBatch.id).all()
+    for batch in batches:
+        payload = batch.result_json or {}
+        if payload.get("_stored"):
+            continue
+        kps = payload.get("knowledge_points") or []
+        rels = payload.get("relations") or []
+        if not kps and not rels:
+            payload["_stored"] = True
+            batch.result_json = payload
+            db.commit()
+            continue
+        merged_kps, merged_rels = _merge_entities(kps, rels, doc.title, subject_name)
+        name_to_id = _store_knowledge_points(db, merged_kps, doc.subject_id, doc.id)
+        rel_count = _store_relations(db, merged_rels, name_to_id, doc.id, kg_settings)
+        run.entity_count = (run.entity_count or 0) + len(name_to_id)
+        run.relation_count = (run.relation_count or 0) + rel_count
+        payload["_stored"] = True
+        payload["_stored_at"] = datetime.now().isoformat()
+        batch.result_json = payload
+        db.commit()
 
 
 def _dispatch_parallel_batches(db):
@@ -707,6 +745,7 @@ def _llm_merge_entities(kps: list, rels: list, doc_title: str, subject_name: str
 def _store_knowledge_points(db, kps: list, subject_id: int, document_id: int = None) -> dict:
     """Store knowledge points in MySQL and Neo4j. Returns name→id mapping."""
     name_to_id = {}
+    neo4j_nodes = []
     existing_by_normalized_name = {
         _normalize_entity_name(point.name): point
         for point in db.query(KnowledgePoint).filter(KnowledgePoint.subject_id == subject_id).all()
@@ -725,10 +764,7 @@ def _store_knowledge_points(db, kps: list, subject_id: int, document_id: int = N
             if kp.get("description") and not existing.description:
                 existing.description = kp.get("description")
                 db.commit()
-            try:
-                neo4j_create_node(existing.id, existing.name, existing.subject_id)
-            except Exception as exc:
-                _record_sync_failure(db, "upsert", "node", existing.id, {"name": existing.name}, exc)
+            neo4j_nodes.append({"id": existing.id, "name": existing.name, "subject_id": existing.subject_id})
             _store_source(db, existing.id, document_id, kp, existing.name)
             continue
 
@@ -745,14 +781,15 @@ def _store_knowledge_points(db, kps: list, subject_id: int, document_id: int = N
         db.commit()
         db.refresh(point)
 
-        try:
-            neo4j_create_node(point.id, point.name, point.subject_id)
-        except Exception as exc:
-            _record_sync_failure(db, "upsert", "node", point.id, {"name": point.name}, exc)
-
         name_to_id[name] = point.id
         existing_by_normalized_name[normalized_name] = point
+        neo4j_nodes.append({"id": point.id, "name": point.name, "subject_id": point.subject_id})
         _store_source(db, point.id, document_id, kp, point.name)
+
+    try:
+        neo4j_upsert_nodes(neo4j_nodes)
+    except Exception as exc:
+        _record_sync_failure(db, "upsert", "node", None, {"count": len(neo4j_nodes)}, exc)
 
     return name_to_id
 
@@ -760,6 +797,7 @@ def _store_knowledge_points(db, kps: list, subject_id: int, document_id: int = N
 def _store_relations(db, rels: list, name_to_id: dict, document_id: int, kg_settings: dict) -> int:
     """Store relations in MySQL and Neo4j."""
     count = 0
+    neo4j_relations = []
     for rel in rels:
         src_name = rel.get("source", "").strip()
         tgt_name = rel.get("target", "").strip()
@@ -790,10 +828,12 @@ def _store_relations(db, rels: list, name_to_id: dict, document_id: int, kg_sett
         )
         if existing_rel:
             _store_relation_evidence(db, existing_rel.id, document_id, rel)
-            try:
-                neo4j_create_relation(src_id, tgt_id, rel_type, rel_desc)
-            except Exception as exc:
-                _record_sync_failure(db, "upsert", "relation", existing_rel.id, rel, exc)
+            neo4j_relations.append({
+                "source_id": src_id,
+                "target_id": tgt_id,
+                "rel_type": rel_type,
+                "description": rel_desc,
+            })
             continue
 
         relation = KnowledgeRelation(
@@ -808,11 +848,18 @@ def _store_relations(db, rels: list, name_to_id: dict, document_id: int, kg_sett
         db.add(relation)
         db.commit()
         _store_relation_evidence(db, relation.id, document_id, rel)
-        try:
-            neo4j_create_relation(src_id, tgt_id, rel_type, rel_desc)
-        except Exception as exc:
-            _record_sync_failure(db, "upsert", "relation", relation.id, rel, exc)
+        neo4j_relations.append({
+            "source_id": src_id,
+            "target_id": tgt_id,
+            "rel_type": rel_type,
+            "description": rel_desc,
+        })
         count += 1
+
+    try:
+        neo4j_upsert_relations(neo4j_relations)
+    except Exception as exc:
+        _record_sync_failure(db, "upsert", "relation", None, {"count": len(neo4j_relations)}, exc)
 
     return count
 
@@ -845,11 +892,13 @@ def _link_to_existing_graph(db, new_kps: list, name_to_id: dict, subject_id: int
     if not existing_kps:
         return 0
 
-    for point in existing_kps:
-        try:
-            neo4j_create_node(point.id, point.name, point.subject_id)
-        except Exception as exc:
-            _record_sync_failure(db, "upsert", "node", point.id, {"name": point.name}, exc)
+    try:
+        neo4j_upsert_nodes([
+            {"id": point.id, "name": point.name, "subject_id": point.subject_id}
+            for point in existing_kps
+        ])
+    except Exception as exc:
+        _record_sync_failure(db, "upsert", "node", None, {"count": len(existing_kps)}, exc)
 
     # Select a sample of new entities to link (top by difficulty)
     sorted_new = sorted(new_kps, key=lambda k: k.get("difficulty", 3), reverse=True)
@@ -904,6 +953,7 @@ def _link_to_existing_graph(db, new_kps: list, name_to_id: dict, subject_id: int
     existing_name_to_id = {kp.name: kp.id for kp in existing_kps}
 
     count = 0
+    neo4j_relations = []
     for rel in relations:
         src_name = rel.get("source", "").strip()
         tgt_name = rel.get("target", "").strip()
@@ -940,10 +990,12 @@ def _link_to_existing_graph(db, new_kps: list, name_to_id: dict, subject_id: int
         )
         if existing_rel:
             _store_relation_evidence(db, existing_rel.id, document_id, rel)
-            try:
-                neo4j_create_relation(src_id, tgt_id, rel_type, rel_desc)
-            except Exception as exc:
-                _record_sync_failure(db, "upsert", "relation", existing_rel.id, rel, exc)
+            neo4j_relations.append({
+                "source_id": src_id,
+                "target_id": tgt_id,
+                "rel_type": rel_type,
+                "description": rel_desc,
+            })
             continue
 
         relation = KnowledgeRelation(
@@ -958,11 +1010,18 @@ def _link_to_existing_graph(db, new_kps: list, name_to_id: dict, subject_id: int
         db.add(relation)
         db.commit()
         _store_relation_evidence(db, relation.id, document_id, rel)
-        try:
-            neo4j_create_relation(src_id, tgt_id, rel_type, rel_desc)
-        except Exception as exc:
-            _record_sync_failure(db, "upsert", "relation", relation.id, rel, exc)
+        neo4j_relations.append({
+            "source_id": src_id,
+            "target_id": tgt_id,
+            "rel_type": rel_type,
+            "description": rel_desc,
+        })
         count += 1
+
+    try:
+        neo4j_upsert_relations(neo4j_relations)
+    except Exception as exc:
+        _record_sync_failure(db, "upsert", "relation", None, {"count": len(neo4j_relations)}, exc)
 
     return count
 
@@ -1095,8 +1154,8 @@ def _finish_run(db, run: KgExtractionRun, result: dict):
     if not run:
         return
     run.status = "success"
-    run.entity_count = result.get("knowledge_points_created", 0)
-    run.relation_count = result.get("relations_created", 0)
+    run.entity_count = max(run.entity_count or 0, result.get("knowledge_points_created", 0))
+    run.relation_count = max(run.relation_count or 0, result.get("relations_created", 0))
     run.finished_at = datetime.now()
     db.commit()
     _update_rebuild_status(db, run.rebuild_id)

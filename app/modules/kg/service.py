@@ -11,7 +11,6 @@ from app.common.graph_store import (
     create_relation as neo4j_create_relation,
     delete_node as neo4j_delete_node,
     delete_relation as neo4j_delete_relation,
-    get_search_subgraph as neo4j_get_search_subgraph,
     get_subgraph as neo4j_get_subgraph,
     search_nodes as neo4j_search_nodes,
     update_node as neo4j_update_node,
@@ -313,6 +312,140 @@ class KgService:
         }
 
     @staticmethod
+    def document_extraction_status(db: Session, limit: int = 200) -> dict:
+        all_documents = (
+            db.query(Document)
+            .order_by(Document.created_at.desc())
+            .all()
+        )
+        rows = []
+        active_count = 0
+        completed_count = 0
+        failed_count = 0
+        total_batches_all = 0
+        processed_batches_all = 0
+        visible_entities_all = 0
+        visible_relations_all = 0
+
+        for doc in all_documents:
+            run = (
+                db.query(KgExtractionRun)
+                .filter(
+                    KgExtractionRun.document_id == doc.id,
+                    KgExtractionRun.rebuild_id.is_(None),
+                )
+                .order_by(KgExtractionRun.id.desc())
+                .first()
+            )
+            batches = (
+                db.query(KgExtractionBatch)
+                .filter(KgExtractionBatch.run_id == run.id)
+                .all()
+            ) if run else []
+            total_batches = len(batches) or (run.batch_count if run else 0) or 0
+            completed_batches = sum(batch.status in {"success", "failed", "stale", "canceled"} for batch in batches)
+            success_batches = sum(batch.status == "success" for batch in batches)
+            failed_batches = sum(batch.status == "failed" for batch in batches)
+            running_batches = sum(batch.status in {"running", "dispatched"} for batch in batches)
+            queued_batches = sum(batch.status == "queued" for batch in batches)
+            point_sources = db.query(KnowledgePointSource.id).filter(
+                KnowledgePointSource.document_id == doc.id
+            ).count()
+            relation_evidence = db.query(KnowledgeRelationEvidence.id).filter(
+                KnowledgeRelationEvidence.document_id == doc.id
+            ).count()
+
+            if doc.parse_status in {"pending", "parsing"}:
+                status = "waiting_parse"
+            elif doc.parse_status == "failed":
+                status = "parse_failed"
+            elif run:
+                status = run.status
+                if (
+                    run.status == "running"
+                    and total_batches
+                    and completed_batches >= total_batches
+                    and not failed_batches
+                ):
+                    status = "finalizing"
+            else:
+                status = "not_started"
+
+            if status == "success":
+                percentage = 100
+            elif status == "finalizing":
+                percentage = 99
+            elif total_batches:
+                percentage = min(99, round(completed_batches * 100 / total_batches))
+            else:
+                percentage = 0
+
+            # This card is for current import/extraction work, not historical archives.
+            # Completed or never-started old documents stay visible in Knowledge Base,
+            # but should not keep the graph progress panel alive forever.
+            show_in_progress = (
+                status in {"waiting_parse", "queued", "running", "finalizing", "failed", "parse_failed"}
+                or running_batches
+                or queued_batches
+                or failed_batches
+            )
+            if not show_in_progress:
+                continue
+
+            if status == "success":
+                completed_count += 1
+            if status in {"failed", "parse_failed"} or failed_batches:
+                failed_count += 1
+            if status in {"queued", "running", "finalizing", "waiting_parse"} or running_batches or queued_batches:
+                active_count += 1
+
+            total_batches_all += total_batches
+            processed_batches_all += completed_batches
+            visible_entities_all += point_sources
+            visible_relations_all += relation_evidence
+
+            rows.append({
+                "document_id": doc.id,
+                "title": doc.title,
+                "parse_status": doc.parse_status,
+                "run_status": status,
+                "processed_batches": completed_batches,
+                "success_batches": success_batches,
+                "failed_batches": failed_batches,
+                "running_batches": running_batches,
+                "queued_batches": queued_batches,
+                "total_batches": total_batches,
+                "percentage": percentage,
+                "entity_count": run.entity_count if run else 0,
+                "relation_count": run.relation_count if run else 0,
+                "visible_entities": point_sources,
+                "visible_relations": relation_evidence,
+                "error_msg": run.error_msg if run else doc.error_msg,
+                "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+            })
+
+        shown_rows = rows[:limit]
+        total_documents = len(rows)
+        if total_documents:
+            percentage = round(sum(row["percentage"] for row in rows) / total_documents)
+        else:
+            percentage = 0
+        return {
+            "documents": shown_rows,
+            "active_documents": active_count,
+            "completed_documents": completed_count,
+            "failed_documents": failed_count,
+            "total_documents": total_documents,
+            "displayed_documents": len(shown_rows),
+            "total_batches": total_batches_all,
+            "processed_batches": processed_batches_all,
+            "visible_entities": visible_entities_all,
+            "visible_relations": visible_relations_all,
+            "percentage": percentage,
+        }
+
+    @staticmethod
     def retry_failed_rebuild_documents(db: Session) -> int:
         rebuild = db.query(KgRebuild).order_by(KgRebuild.id.desc()).first()
         if not rebuild:
@@ -417,16 +550,7 @@ class KgService:
 
     @staticmethod
     def search_subgraph(db: Session, keyword: str, subject_id: int = None) -> dict:
-        neo4j_error = None
-        try:
-            data = neo4j_get_search_subgraph(keyword, subject_id, depth=1)
-            if data.get("nodes") or data.get("edges"):
-                return KgService._attach_mysql_relation_ids(db, data, subject_id)
-        except Exception as e:
-            neo4j_error = str(e)
         data = KgService._mysql_search_subgraph(db, keyword, subject_id)
-        if neo4j_error:
-            data["warning"] = f"Neo4j 查询失败，已使用 MySQL 兜底：{neo4j_error}"
         return data
 
     @staticmethod
