@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
 
+-- 默认用户（密码经 bcrypt 加密，与 app/modules/auth/service.py 的 passlib bcrypt 校验一致）
+--   admin   / admin123   （管理员）
+--   student / student123 （普通用户）
+INSERT IGNORE INTO users (username, email, password_hash, role, status) VALUES
+    ('admin',   'admin@kqa.com',   '$2b$12$uBDgVbSn6XFQOyGQZ0AGv.yoe4eGfDPfM3SB83SjLfi2WcNEHdF7.', 'admin', 'active'),
+    ('student', 'student@kqa.com', '$2b$12$34/Gc0CYj1ub/wC25G7zjudgK0nmYkxxorrbdVqXRRg4bw8G3dVOK', 'user',  'active');
+
 -- 科目表
 CREATE TABLE IF NOT EXISTS subjects (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -233,10 +240,14 @@ CREATE TABLE IF NOT EXISTS system_configs (
 
 -- 插入默认配置（config_key 需与后端 system/router.py 和 qa/service.py 中的键名一致）
 INSERT IGNORE INTO system_configs (config_key, config_value, description) VALUES
-    ('deepseek_api_key', '', '大模型API Key'),
+    ('deepseek_api_key', '', '大模型API Key（LLM/Embedding 默认共用，可在档案中分别覆盖）'),
     ('deepseek_api_base', 'https://api.deepseek.com/v1', '大模型API地址'),
-    ('llm_model', 'deepseek-v4-flash', '对话模型名称'),
-    ('embedding_model', 'deepseek-embedding', 'Embedding模型名称'),
+    ('llm_model', 'deepseek-v4-flash', '对话模型名称（兼容回退键）'),
+    -- 系统配置以下列 JSON 键为事实源，由 app/common/runtime_config.py 解析后全局生效
+    ('llm_config', '{"api_url":"https://api.deepseek.com/v1","model":"deepseek-v4-flash","api_key_ref":"deepseek_api_key","temperature":0.7,"top_p":0.9,"max_tokens":4096}', 'LLM 模型配置'),
+    ('embedding_model', '{"api_url":"https://api.deepseek.com/v1","model":"deepseek-embedding","api_key_ref":"deepseek_api_key","dimension":1024,"batch_size":32}', 'Embedding 模型配置'),
+    ('model_profiles', '[]', '已保存模型档案（LLM/Embedding 可多套切换）'),
+    ('retrieval_config', '{"top_k":10,"similarity_threshold":0.75,"vector_weight":0.6,"graph_weight":0.4}', '检索配置'),
     ('llm.temperature', '0.7', '生成温度'),
     ('llm.max_tokens', '4096', '最大Token数'),
     ('retrieval.top_k', '10', '检索Top-K数量'),

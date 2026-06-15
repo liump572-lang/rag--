@@ -65,6 +65,20 @@ def ensure_kg_schema():
             # Do not block application startup behind long-running extraction queries.
             pass
         defaults = {
+            # 系统配置（runtime_config 的事实源）——对存量数据卷补齐默认值，INSERT IGNORE 不会覆盖已有值
+            "deepseek_api_key": ("", "大模型API Key（LLM/Embedding 默认共用）"),
+            "deepseek_api_base": ("https://api.deepseek.com/v1", "大模型API地址"),
+            "llm_model": ("deepseek-v4-flash", "对话模型名称（兼容回退键）"),
+            "llm_config": (
+                '{"api_url":"https://api.deepseek.com/v1","model":"deepseek-v4-flash","api_key_ref":"deepseek_api_key","temperature":0.7,"top_p":0.9,"max_tokens":4096}',
+                "LLM 模型配置",
+            ),
+            "embedding_model": (
+                '{"api_url":"https://api.deepseek.com/v1","model":"deepseek-embedding","api_key_ref":"deepseek_api_key","dimension":1024,"batch_size":32}',
+                "Embedding 模型配置",
+            ),
+            "model_profiles": ("[]", "已保存模型档案"),
+            "retrieval_config": ('{"top_k":10,"similarity_threshold":0.75,"vector_weight":0.6,"graph_weight":0.4}', "检索配置"),
             "chunk.min_chars": ("120", "文档最小切块大小"),
             "chunk.size": ("512", "文档目标切块大小"),
             "chunk.overlap": ("128", "文档切块重叠量"),

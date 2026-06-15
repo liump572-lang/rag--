@@ -74,7 +74,7 @@ def search_knowledge(
 ) -> List[dict]:
     """Search knowledge base with entity-aware boosting."""
     # Primary: vector search
-    chroma_results = chroma_search(query, top_k=top_k)
+    chroma_results = chroma_search(query, top_k=top_k, db=db)
 
     # Extract entities from query for boosting
     entity_names = _extract_entity_names(db, query, subject_id)

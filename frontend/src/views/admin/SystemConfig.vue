@@ -2,146 +2,228 @@
   <div class="config-page">
     <div class="page-toolbar">
       <h2>系统设置</h2>
-      <span class="toolbar-hint">修改将在下次提问时生效</span>
+      <span class="toolbar-hint">配置保存后在下一次调用（问答 / 解析 / 图谱抽取 / 向量化）即生效</span>
     </div>
 
-    <!-- 模型选择 -->
+    <!-- ──────────── LLM 配置 ──────────── -->
     <el-card class="section-card">
-      <template #header><span class="card-title">模型选择</span></template>
-      <div class="model-grid">
-        <div
-          v-for="m in models" :key="m.value"
-          :class="['model-card', { active: selectedModel === m.value, current: savedModel === m.value }]"
-          @click="selectedModel = m.value"
-        >
-          <div class="model-name">{{ m.label }}</div>
-          <div class="model-desc">{{ m.description }}</div>
-          <div class="model-value">{{ m.value }}</div>
-          <span v-if="savedModel === m.value" class="model-badge">当前使用</span>
-          <span v-else-if="selectedModel === m.value" class="model-badge pending">待保存</span>
-        </div>
-      </div>
-      <div v-if="selectedModel !== savedModel" style="margin-top:14px;display:flex;align-items:center;gap:10px">
-        <el-button type="primary" :loading="savingModel" @click="saveModel">保存模型设置</el-button>
-        <el-button size="small" @click="selectedModel = savedModel">取消</el-button>
-      </div>
-    </el-card>
-
-    <!-- API 配置 -->
-    <el-card class="section-card">
-      <template #header><span class="card-title">API 配置</span></template>
-      <el-form :model="apiForm" label-width="110px">
+      <template #header><span class="card-title">LLM 大模型</span></template>
+      <el-form :model="llmForm" label-width="120px">
         <el-form-item label="API Base URL">
-          <el-input v-model="apiForm.api_base" placeholder="https://api.deepseek.com/v1" />
+          <el-input v-model="llmForm.api_base" placeholder="https://api.deepseek.com/v1" />
         </el-form-item>
-        <el-form-item label="API Key">
-          <div style="display:flex;flex-direction:column;gap:6px;width:100%">
-            <div style="display:flex;gap:8px;align-items:center">
-              <el-input
-                v-model="apiForm.api_key"
-                type="password"
-                placeholder="输入新 API Key 以更换"
-                show-password
-                style="flex:1"
-              />
-              <el-button
-                size="small"
-                @click="apiForm.api_key = ''; apiKeyChanged = false"
-                :disabled="!apiKeyChanged"
-              >
-                重置
-              </el-button>
-            </div>
-            <span class="field-hint">
-              当前：{{ apiMasked || '未配置' }}
-              <template v-if="apiKeyChanged">（已修改，保存后生效）</template>
-            </span>
+        <el-form-item label="模型">
+          <div class="model-row">
+            <el-select
+              v-model="llmForm.model" filterable allow-create default-first-option
+              placeholder="选择或输入模型名" style="flex:1"
+            >
+              <el-option v-for="m in llmModels" :key="m" :label="m" :value="m" />
+            </el-select>
+            <el-button :loading="llmFetching" @click="fetchInto('llm')">拉取模型</el-button>
           </div>
         </el-form-item>
-        <el-form-item label="Embedding 模型">
-          <el-input :model-value="embeddingModel" disabled>
-            <template #suffix><span style="color:var(--text3);font-size:12px">只读</span></template>
-          </el-input>
+        <el-form-item label="API Key">
+          <el-input v-model="llmForm.api_key" type="password" show-password
+            :placeholder="`当前：${settings.llm.api_key_masked}（留空表示不修改）`" />
+        </el-form-item>
+        <el-form-item label="采样参数">
+          <div class="param-row">
+            <span>temperature</span>
+            <el-input-number v-model="llmForm.temperature" :min="0" :max="2" :step="0.1" :precision="2" size="small" />
+            <span>top_p</span>
+            <el-input-number v-model="llmForm.top_p" :min="0" :max="1" :step="0.05" :precision="2" size="small" />
+            <span>max_tokens</span>
+            <el-input-number v-model="llmForm.max_tokens" :min="1" :max="32768" :step="256" size="small" />
+          </div>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="savingApi" @click="saveApiSettings" :disabled="!apiFormChanged">
-            保存 API 设置
-          </el-button>
-          <span v-if="!apiFormChanged" style="font-size:12px;color:var(--text3);margin-left:8px">无修改</span>
+          <el-button type="primary" :loading="savingLlm" @click="saveLlm">保存 LLM 设置</el-button>
         </el-form-item>
       </el-form>
     </el-card>
 
-    <!-- 高级配置 -->
+    <!-- ──────────── Embedding 配置 ──────────── -->
+    <el-card class="section-card">
+      <template #header><span class="card-title">Embedding 向量模型</span></template>
+      <el-form :model="embForm" label-width="120px">
+        <el-form-item label="API Base URL">
+          <el-input v-model="embForm.api_base" placeholder="https://api.deepseek.com/v1" />
+        </el-form-item>
+        <el-form-item label="模型">
+          <div class="model-row">
+            <el-select
+              v-model="embForm.model" filterable allow-create default-first-option
+              placeholder="选择或输入模型名" style="flex:1"
+            >
+              <el-option v-for="m in embModels" :key="m" :label="m" :value="m" />
+            </el-select>
+            <el-button :loading="embFetching" @click="fetchInto('embedding')">拉取模型</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="embForm.api_key" type="password" show-password
+            :placeholder="`当前：${settings.embedding.api_key_masked}（留空表示不修改）`" />
+        </el-form-item>
+        <el-form-item label="向量维度">
+          <el-input-number v-model="embForm.dimension" :min="64" :max="8192" :step="128" />
+          <span class="field-hint" style="margin-left:10px">改变维度将使用新的向量集合，存量文档需重新解析</span>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="savingEmb" @click="saveEmbedding">保存 Embedding 设置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
+    <!-- ──────────── 检索配置 ──────────── -->
+    <el-card class="section-card">
+      <template #header><span class="card-title">检索参数</span></template>
+      <el-form :model="retrievalForm" label-width="120px">
+        <el-form-item label="Top-K">
+          <el-input-number v-model="retrievalForm.top_k" :min="1" :max="50" />
+        </el-form-item>
+        <el-form-item label="相似度阈值">
+          <el-input-number v-model="retrievalForm.similarity_threshold" :min="0" :max="1" :step="0.05" :precision="2" />
+        </el-form-item>
+        <el-form-item label="向量/图谱权重">
+          <div class="param-row">
+            <span>vector</span>
+            <el-input-number v-model="retrievalForm.vector_weight" :min="0" :max="1" :step="0.1" :precision="2" size="small" />
+            <span>graph</span>
+            <el-input-number v-model="retrievalForm.graph_weight" :min="0" :max="1" :step="0.1" :precision="2" size="small" />
+          </div>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="savingRetrieval" @click="saveRetrieval">保存检索设置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
+    <!-- ──────────── 模型档案 ──────────── -->
     <el-card class="section-card">
       <template #header>
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <span class="card-title">高级配置</span>
-          <el-button size="small" @click="showAdd = true">新增配置</el-button>
+        <div class="card-head-flex">
+          <span class="card-title">模型档案</span>
+          <div>
+            <el-button size="small" @click="openProfile('llm')">+ LLM 档案</el-button>
+            <el-button size="small" @click="openProfile('embedding')">+ Embedding 档案</el-button>
+          </div>
         </div>
       </template>
-      <el-table :data="list" v-loading="loading" empty-text="暂无配置项" stripe>
-        <el-table-column prop="config_key" label="配置键" min-width="180">
+      <el-table :data="profiles" empty-text="暂无已保存档案，可保存多套配置随时切换" stripe>
+        <el-table-column label="类型" width="110">
           <template #default="{ row }">
-            <code style="font-size:12px">{{ row.config_key }}</code>
+            <el-tag size="small" :type="row.type === 'llm' ? 'primary' : 'success'">
+              {{ row.type === 'llm' ? 'LLM' : 'Embedding' }}
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="config_value" label="配置值" min-width="220">
+        <el-table-column prop="name" label="名称" min-width="120" />
+        <el-table-column prop="model" label="模型" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="api_url" label="API 地址" min-width="200" show-overflow-tooltip />
+        <el-table-column label="Key" width="90">
           <template #default="{ row }">
-            <span v-if="isSecretKey(row.config_key)">{{ maskValue(row.config_value) }}</span>
-            <span v-else>{{ row.config_value }}</span>
+            <el-tag size="small" :type="row.api_key_configured ? 'success' : 'info'">
+              {{ row.api_key_configured ? '已配置' : '未配置' }}
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="说明" min-width="150">
-          <template #default="{ row }">{{ row.description || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="更新时间" width="170">
-          <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-button size="small" @click="editRow(row)">编辑</el-button>
-            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-tag v-if="row.active" size="small" type="warning">当前使用</el-tag>
+            <span v-else style="color:var(--text3);font-size:12px">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="210" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" :disabled="row.active" @click="activate(row)">设为当前</el-button>
+            <el-button size="small" @click="openProfile(row.type, row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="removeProfile(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
-    <!-- 新增配置对话框 -->
-    <el-dialog v-model="showAdd" title="新增配置" width="500px">
-      <el-form :model="addForm" label-width="80px" ref="addFormRef" :rules="addRules">
-        <el-form-item label="配置键" prop="config_key">
-          <el-input v-model="addForm.config_key" placeholder="如 embedding_model" />
+    <!-- ──────────── 高级配置 ──────────── -->
+    <el-card class="section-card">
+      <template #header>
+        <div class="card-head-flex">
+          <span class="card-title">高级配置（原始键值）</span>
+          <el-button size="small" @click="showAdd = true">新增配置</el-button>
+        </div>
+      </template>
+      <el-table :data="configs" v-loading="loadingConfigs" empty-text="暂无配置项" stripe>
+        <el-table-column prop="config_key" label="配置键" min-width="180">
+          <template #default="{ row }"><code style="font-size:12px">{{ row.config_key }}</code></template>
+        </el-table-column>
+        <el-table-column prop="config_value" label="配置值" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="description" label="说明" min-width="140">
+          <template #default="{ row }">{{ row.description || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="editConfig(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="removeConfig(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <!-- 档案对话框 -->
+    <el-dialog v-model="profileVisible" :title="profileDialogTitle" width="560px">
+      <el-form :model="profileForm" label-width="110px">
+        <el-form-item label="名称">
+          <el-input v-model="profileForm.name" placeholder="如：DeepSeek 生产 / 硅基流动 bge-m3" />
         </el-form-item>
-        <el-form-item label="配置值" prop="config_value">
-          <el-input v-model="addForm.config_value" type="textarea" :rows="3" />
+        <el-form-item label="API Base URL">
+          <el-input v-model="profileForm.api_url" placeholder="https://.../v1" />
         </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="addForm.description" placeholder="可选说明" />
+        <el-form-item label="API Key">
+          <el-input v-model="profileForm.api_key" type="password" show-password
+            :placeholder="editingProfile ? '留空表示不修改' : '请输入 API Key'" />
+        </el-form-item>
+        <el-form-item label="模型">
+          <div class="model-row">
+            <el-select v-model="profileForm.model" filterable allow-create default-first-option
+              placeholder="选择或输入模型名" style="flex:1">
+              <el-option v-for="m in profileModels" :key="m" :label="m" :value="m" />
+            </el-select>
+            <el-button :loading="profileFetching" @click="fetchInto('profile')">拉取模型</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="profileForm.type === 'embedding'" label="向量维度">
+          <el-input-number v-model="profileForm.dimension" :min="64" :max="8192" :step="128" />
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button @click="profileVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新增配置对话框 -->
+    <el-dialog v-model="showAdd" title="新增配置" width="500px">
+      <el-form :model="addForm" label-width="80px">
+        <el-form-item label="配置键"><el-input v-model="addForm.config_key" /></el-form-item>
+        <el-form-item label="配置值"><el-input v-model="addForm.config_value" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="addForm.description" /></el-form-item>
+      </el-form>
+      <template #footer>
         <el-button @click="showAdd = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="handleAdd">保存</el-button>
+        <el-button type="primary" :loading="savingConfig" @click="addConfig">保存</el-button>
       </template>
     </el-dialog>
 
     <!-- 编辑配置对话框 -->
     <el-dialog v-model="showEdit" title="编辑配置" width="500px">
       <el-form :model="editForm" label-width="80px">
-        <el-form-item label="配置键">
-          <el-input :model-value="editForm.config_key" disabled />
-        </el-form-item>
-        <el-form-item label="配置值">
-          <el-input v-model="editForm.config_value" type="textarea" :rows="3" />
-        </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="editForm.description" />
-        </el-form-item>
+        <el-form-item label="配置键"><el-input :model-value="editForm.config_key" disabled /></el-form-item>
+        <el-form-item label="配置值"><el-input v-model="editForm.config_value" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="editForm.description" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showEdit = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="handleEdit">保存</el-button>
+        <el-button type="primary" :loading="savingConfig" @click="saveEditConfig">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -150,208 +232,258 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getConfigs, createConfig, updateConfig, deleteConfig, getModels, getSettings, saveSettings } from '@/api/systemConfig'
+import {
+  getSettings, saveSettings, getProfiles, createProfile, updateProfile,
+  deleteProfile, activateProfile, fetchModels,
+  getConfigs, createConfig, updateConfig, deleteConfig,
+} from '@/api/systemConfig'
 
-// ── 模型选择 ──
-const models = ref([])
-const selectedModel = ref('')       // 用户当前点击的模型（未保存）
-const savedModel = ref('')          // 数据库中实际保存的模型
-const savingModel = ref(false)
-
-// ── API 配置 ──
-const apiForm = reactive({ api_base: '', api_key: '' })
-const apiSavedBase = ref('')
-const apiMasked = ref('')
-const embeddingModel = ref('')
-const apiKeyChanged = ref(false)
-const savingApi = ref(false)
-
-const apiFormChanged = computed(() => {
-  return apiForm.api_base !== apiSavedBase.value || apiKeyChanged.value
+// ── 当前生效配置 ──
+const settings = reactive({
+  llm: { model: '', api_base: '', api_key_masked: '未配置', temperature: 0.7, top_p: 0.9, max_tokens: 4096 },
+  embedding: { model: '', api_base: '', api_key_masked: '未配置', dimension: 1024 },
+  retrieval: { top_k: 10, similarity_threshold: 0.75, vector_weight: 0.6, graph_weight: 0.4 },
 })
+const llmForm = reactive({ api_base: '', model: '', api_key: '', temperature: 0.7, top_p: 0.9, max_tokens: 4096 })
+const embForm = reactive({ api_base: '', model: '', api_key: '', dimension: 1024 })
+const retrievalForm = reactive({ top_k: 10, similarity_threshold: 0.75, vector_weight: 0.6, graph_weight: 0.4 })
+const savingLlm = ref(false)
+const savingEmb = ref(false)
+const savingRetrieval = ref(false)
+
+// ── 模型拉取 ──
+const llmModels = ref([])
+const embModels = ref([])
+const profileModels = ref([])
+const llmFetching = ref(false)
+const embFetching = ref(false)
+const profileFetching = ref(false)
+
+// ── 档案 ──
+const profiles = ref([])
+const profileVisible = ref(false)
+const editingProfile = ref(null)
+const savingProfile = ref(false)
+const profileForm = reactive({ type: 'llm', name: '', api_url: '', api_key: '', model: '', dimension: 1024 })
+const profileDialogTitle = computed(() =>
+  (editingProfile.value ? '编辑' : '新增') + (profileForm.type === 'llm' ? ' LLM 档案' : ' Embedding 档案'))
 
 // ── 高级配置 ──
-const list = ref([])
-const loading = ref(false)
-const saving = ref(false)
+const configs = ref([])
+const loadingConfigs = ref(false)
 const showAdd = ref(false)
 const showEdit = ref(false)
+const savingConfig = ref(false)
 const editTarget = ref(null)
-const addFormRef = ref(null)
-
 const addForm = reactive({ config_key: '', config_value: '', description: '' })
 const editForm = reactive({ config_key: '', config_value: '', description: '' })
-const addRules = {
-  config_key: [{ required: true, message: '请输入配置键', trigger: 'blur' }],
-  config_value: [{ required: true, message: '请输入配置值', trigger: 'blur' }],
-}
 
 onMounted(() => {
-  Promise.all([fetchModels(), fetchSettings(), fetchList()])
+  fetchSettings()
+  fetchProfiles()
+  fetchConfigs()
 })
-
-// ── API calls ──
-async function fetchModels() {
-  try {
-    const res = await getModels()
-    if (res.code === 200) models.value = res.data
-  } catch { /* ignore */ }
-}
 
 async function fetchSettings() {
   try {
     const res = await getSettings()
     if (res.code === 200) {
-      savedModel.value = res.data.llm_model || ''
-      selectedModel.value = savedModel.value
-      apiSavedBase.value = res.data.api_base || ''
-      apiForm.api_base = apiSavedBase.value
-      apiForm.api_key = ''
-      apiKeyChanged.value = false
-      apiMasked.value = res.data.api_key_masked || ''
-      embeddingModel.value = res.data.embedding_model || ''
+      Object.assign(settings.llm, res.data.llm)
+      Object.assign(settings.embedding, res.data.embedding)
+      Object.assign(settings.retrieval, res.data.retrieval)
+      Object.assign(llmForm, {
+        api_base: settings.llm.api_base, model: settings.llm.model, api_key: '',
+        temperature: settings.llm.temperature, top_p: settings.llm.top_p, max_tokens: settings.llm.max_tokens,
+      })
+      Object.assign(embForm, {
+        api_base: settings.embedding.api_base, model: settings.embedding.model, api_key: '',
+        dimension: settings.embedding.dimension,
+      })
+      Object.assign(retrievalForm, settings.retrieval)
     }
   } catch { /* ignore */ }
 }
 
-async function fetchList() {
-  loading.value = true
+async function saveLlm() {
+  savingLlm.value = true
+  try {
+    const payload = {
+      llm_api_base: llmForm.api_base, llm_model: llmForm.model,
+      temperature: llmForm.temperature, top_p: llmForm.top_p, max_tokens: llmForm.max_tokens,
+    }
+    if (llmForm.api_key) payload.llm_api_key = llmForm.api_key
+    await saveSettings(payload)
+    ElMessage.success('LLM 设置已保存')
+    fetchSettings()
+  } catch { ElMessage.error('保存失败') } finally { savingLlm.value = false }
+}
+
+async function saveEmbedding() {
+  savingEmb.value = true
+  try {
+    const payload = {
+      embedding_api_base: embForm.api_base, embedding_model: embForm.model, embedding_dimension: embForm.dimension,
+    }
+    if (embForm.api_key) payload.embedding_api_key = embForm.api_key
+    await saveSettings(payload)
+    ElMessage.success('Embedding 设置已保存')
+    fetchSettings()
+  } catch { ElMessage.error('保存失败') } finally { savingEmb.value = false }
+}
+
+async function saveRetrieval() {
+  savingRetrieval.value = true
+  try {
+    await saveSettings({ retrieval: { ...retrievalForm } })
+    ElMessage.success('检索设置已保存')
+    fetchSettings()
+  } catch { ElMessage.error('保存失败') } finally { savingRetrieval.value = false }
+}
+
+// 拉取模型列表：target = 'llm' | 'embedding' | 'profile'
+async function fetchInto(target) {
+  const flagMap = { llm: llmFetching, embedding: embFetching, profile: profileFetching }
+  const listMap = { llm: llmModels, embedding: embModels, profile: profileModels }
+  let apiUrl, apiKey, modelType, profileId, useSaved
+  if (target === 'profile') {
+    apiUrl = profileForm.api_url; apiKey = profileForm.api_key; modelType = profileForm.type
+    profileId = editingProfile.value?.id; useSaved = !profileForm.api_key && !!editingProfile.value
+  } else if (target === 'llm') {
+    apiUrl = llmForm.api_base; apiKey = llmForm.api_key; modelType = 'llm'; useSaved = !llmForm.api_key
+  } else {
+    apiUrl = embForm.api_base; apiKey = embForm.api_key; modelType = 'embedding'; useSaved = !embForm.api_key
+  }
+  if (!apiUrl) { ElMessage.warning('请先填写 API Base URL'); return }
+  flagMap[target].value = true
+  try {
+    const res = await fetchModels({ api_url: apiUrl, api_key: apiKey || '', model_type: modelType, profile_id: profileId, use_saved_key: useSaved })
+    if (res.code === 200 && !res.data.error) {
+      listMap[target].value = res.data.models || []
+      if (!res.data.models?.length) ElMessage.info('该服务未返回模型列表，可手动输入模型名')
+      else ElMessage.success(`拉取到 ${res.data.models.length} 个模型`)
+    } else {
+      ElMessage.error(res.data?.error || '拉取失败')
+    }
+  } catch { ElMessage.error('拉取失败') } finally { flagMap[target].value = false }
+}
+
+// ── 档案 ──
+async function fetchProfiles() {
+  try {
+    const res = await getProfiles()
+    if (res.code === 200) profiles.value = res.data
+  } catch { /* ignore */ }
+}
+
+function openProfile(type, row = null) {
+  editingProfile.value = row
+  profileModels.value = []
+  Object.assign(profileForm, {
+    type, name: row?.name || '', api_url: row?.api_url || '', api_key: '',
+    model: row?.model || '', dimension: row?.dimension || 1024,
+  })
+  profileVisible.value = true
+}
+
+async function saveProfile() {
+  if (!profileForm.name || !profileForm.api_url || !profileForm.model) {
+    ElMessage.warning('请填写名称、API 地址和模型'); return
+  }
+  savingProfile.value = true
+  try {
+    if (editingProfile.value) {
+      const payload = { name: profileForm.name, api_url: profileForm.api_url, model: profileForm.model }
+      if (profileForm.type === 'embedding') payload.dimension = profileForm.dimension
+      if (profileForm.api_key) payload.api_key = profileForm.api_key
+      await updateProfile(editingProfile.value.id, payload)
+    } else {
+      const payload = {
+        type: profileForm.type, name: profileForm.name, api_url: profileForm.api_url,
+        model: profileForm.model, api_key: profileForm.api_key || null,
+      }
+      if (profileForm.type === 'embedding') payload.dimension = profileForm.dimension
+      await createProfile(payload)
+    }
+    ElMessage.success('已保存')
+    profileVisible.value = false
+    fetchProfiles()
+    fetchSettings()
+  } catch { ElMessage.error('保存失败') } finally { savingProfile.value = false }
+}
+
+async function activate(row) {
+  try {
+    await activateProfile(row.id)
+    ElMessage.success('已切换为当前使用配置')
+    fetchProfiles()
+    fetchSettings()
+  } catch { ElMessage.error('切换失败') }
+}
+
+async function removeProfile(row) {
+  try {
+    await ElMessageBox.confirm(`确定删除档案「${row.name}」？`, '提示')
+    await deleteProfile(row.id)
+    ElMessage.success('已删除')
+    fetchProfiles()
+  } catch { /* cancelled */ }
+}
+
+// ── 高级配置 ──
+async function fetchConfigs() {
+  loadingConfigs.value = true
   try {
     const res = await getConfigs()
-    if (res.code === 200) list.value = res.data
-  } finally {
-    loading.value = false
-  }
+    if (res.code === 200) configs.value = res.data
+  } finally { loadingConfigs.value = false }
 }
 
-// ── Model save ──
-async function saveModel() {
-  if (selectedModel.value === savedModel.value) return
-  savingModel.value = true
+async function addConfig() {
+  if (!addForm.config_key || !addForm.config_value) { ElMessage.warning('请填写配置键和值'); return }
+  savingConfig.value = true
   try {
-    await saveSettings({ llm_model: selectedModel.value })
-    savedModel.value = selectedModel.value
-    ElMessage.success('模型已切换，下次提问时生效')
-    fetchList()
-  } catch {
-    ElMessage.error('保存失败')
-  } finally {
-    savingModel.value = false
-  }
+    await createConfig({ ...addForm })
+    ElMessage.success('已创建')
+    showAdd.value = false
+    Object.assign(addForm, { config_key: '', config_value: '', description: '' })
+    fetchConfigs(); fetchSettings()
+  } catch { ElMessage.error('创建失败') } finally { savingConfig.value = false }
 }
 
-// ── API settings save ──
-async function saveApiSettings() {
-  savingApi.value = true
-  try {
-    const payload = { api_base: apiForm.api_base }
-    if (apiKeyChanged.value) payload.api_key = apiForm.api_key
-    await saveSettings(payload)
-    ElMessage.success('API 设置已保存，下次提问时生效')
-    fetchSettings()
-    fetchList()
-  } catch {
-    ElMessage.error('保存失败')
-  } finally {
-    savingApi.value = false
-  }
-}
-
-// Watch API key field for changes
-import { watch } from 'vue'
-watch(() => apiForm.api_key, (val) => {
-  apiKeyChanged.value = val !== ''
-})
-
-// ── Helpers ──
-function isSecretKey(key) {
-  return key && (key.includes('api_key') || key.includes('secret') || key.includes('password'))
-}
-
-function maskValue(val) {
-  if (!val) return ''
-  if (val.length <= 12) return '****'
-  return val.slice(0, 6) + '****' + val.slice(-4)
-}
-
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
-}
-
-// ── Advanced config operations ──
-function editRow(row) {
+function editConfig(row) {
   editTarget.value = row
-  editForm.config_key = row.config_key
-  editForm.config_value = row.config_value
-  editForm.description = row.description
+  Object.assign(editForm, { config_key: row.config_key, config_value: row.config_value, description: row.description })
   showEdit.value = true
 }
 
-async function handleAdd() {
-  const valid = await addFormRef.value?.validate().catch(() => false)
-  if (!valid) return
-  saving.value = true
-  try {
-    await createConfig({ config_key: addForm.config_key, config_value: addForm.config_value, description: addForm.description })
-    ElMessage.success('已创建')
-    showAdd.value = false
-    addForm.config_key = ''; addForm.config_value = ''; addForm.description = ''
-    fetchList()
-  } finally {
-    saving.value = false
-  }
-}
-
-async function handleEdit() {
-  saving.value = true
+async function saveEditConfig() {
+  savingConfig.value = true
   try {
     await updateConfig(editTarget.value.id, { config_value: editForm.config_value, description: editForm.description })
     ElMessage.success('已更新')
     showEdit.value = false
-    fetchList()
-  } finally {
-    saving.value = false
-  }
+    fetchConfigs(); fetchSettings()
+  } catch { ElMessage.error('更新失败') } finally { savingConfig.value = false }
 }
 
-async function handleDelete(row) {
+async function removeConfig(row) {
   try {
-    await ElMessageBox.confirm('确定删除此配置？')
+    await ElMessageBox.confirm('确定删除此配置？', '提示')
     await deleteConfig(row.id)
     ElMessage.success('已删除')
-    fetchList()
-  } catch { /* user cancelled */ }
+    fetchConfigs()
+  } catch { /* cancelled */ }
 }
 </script>
 
 <style scoped>
-.page-toolbar { display:flex; align-items:baseline; gap:16px; margin-bottom:20px; }
+.page-toolbar { display:flex; align-items:baseline; gap:16px; margin-bottom:20px; flex-wrap:wrap; }
 .page-toolbar h2 { margin:0; }
 .toolbar-hint { font-size:12px; color:var(--text3); }
 .section-card { margin-bottom:20px; }
 .card-title { font-size:15px; font-weight:600; }
+.card-head-flex { display:flex; justify-content:space-between; align-items:center; }
 .field-hint { font-size:12px; color:var(--text2); }
-
-/* ── Model grid ── */
-.model-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:12px; }
-.model-card {
-  border:2px solid var(--border);
-  border-radius:10px;
-  padding:16px;
-  cursor:pointer;
-  transition:all 0.2s;
-  position:relative;
-}
-.model-card:hover { border-color:var(--primary); background:rgba(124,58,237,0.05); }
-.model-card.active { border-color:var(--primary); background:rgba(124,58,237,0.08); }
-.model-card.current { border-color:var(--primary); background:rgba(124,58,237,0.12); }
-.model-name { font-size:15px; font-weight:600; color:var(--text); margin-bottom:4px; }
-.model-desc { font-size:12px; color:var(--text2); margin-bottom:6px; }
-.model-value { font-size:11px; color:var(--text3); font-family:monospace; }
-.model-badge {
-  position:absolute; top:8px; right:10px;
-  font-size:11px; color:var(--primary); font-weight:600;
-}
-.model-badge.pending { color:#e6a23c; }
+.model-row { display:flex; gap:8px; width:100%; }
+.param-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13px; color:var(--text2); }
 </style>
