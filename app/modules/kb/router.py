@@ -51,9 +51,18 @@ def retrieval_test(
     query: str = Query(..., min_length=1),
     top_k: int = Query(10, ge=1, le=50),
     subject_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
 ):
     from app.common.vector_store import search_chunks
-    where = {"document_id": subject_id} if subject_id else None
+    from app.models import Document
+    where = None
+    if subject_id:
+        # Chroma 分片 metadata 只有 document_id，没有 subject_id；
+        # 因此先把科目解析成它名下的文档 id 集合，再按 document_id 过滤。
+        doc_ids = [row.id for row in db.query(Document.id).filter(Document.subject_id == subject_id).all()]
+        if not doc_ids:
+            return success_response(data=[])
+        where = {"document_id": {"$in": doc_ids}}
     results = search_chunks(query, top_k=top_k, where=where)
     return success_response(data=results)
 

@@ -1,12 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
-
-
-class SettingsUpdate(BaseModel):
-    llm_model: Optional[str] = None
-    api_base: Optional[str] = None
-    api_key: Optional[str] = None
 
 
 class KgExtractionSettings(BaseModel):
@@ -21,6 +15,53 @@ class KgExtractionSettings(BaseModel):
     batch_retry_limit: int = Field(default=2, ge=0, le=5)
     cross_relation_top_k: int = Field(default=30, ge=1, le=200)
 
+
+# ──────────────── 系统设置（LLM / Embedding / 检索） ────────────────
+
+class SettingsUpdate(BaseModel):
+    llm_model: Optional[str] = None
+    llm_api_base: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    temperature: Optional[float] = Field(default=None, ge=0, le=2)
+    top_p: Optional[float] = Field(default=None, ge=0, le=1)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=32768)
+    embedding_model: Optional[str] = None
+    embedding_api_base: Optional[str] = None
+    embedding_api_key: Optional[str] = None
+    embedding_dimension: Optional[int] = Field(default=None, ge=64, le=8192)
+    retrieval: Optional[dict] = None
+
+
+# ──────────────── 模型档案 ────────────────
+
+class ProfileCreate(BaseModel):
+    type: Literal["llm", "embedding"]
+    name: str = Field(..., max_length=100)
+    api_url: str
+    model: str
+    dimension: Optional[int] = Field(default=None, ge=64, le=8192)
+    api_key: Optional[str] = None
+
+
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    api_url: Optional[str] = None
+    model: Optional[str] = None
+    dimension: Optional[int] = Field(default=None, ge=64, le=8192)
+    api_key: Optional[str] = None
+
+
+class FetchModelsRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    api_url: str
+    api_key: Optional[str] = None
+    model_type: Literal["llm", "embedding"] = "llm"
+    profile_id: Optional[str] = None
+    use_saved_key: bool = False
+
+
+# ──────────────── 通用配置 ────────────────
 
 class SystemConfigCreate(BaseModel):
     config_key: str = Field(..., max_length=100)

@@ -50,7 +50,7 @@ services:
     restart: unless-stopped
     ports:
       - '7474:7474'
-      - '7687:7687'
+      - '7688:7687'
     environment:
       NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/neo4j_password}
       NEO4J_dbms_memory_pagecache_size: 256M
@@ -95,7 +95,7 @@ services:
     container_name: kqa-backend
     restart: unless-stopped
     ports:
-      - '8000:8000'
+      - '18000:8000'
     environment:
       - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-qa_app}:${MYSQL_PASSWORD:-qa_app_pass}@mysql:3306/${MYSQL_DATABASE:-knowledge_qa_system}?charset=utf8mb4
       - REDIS_HOST=redis
@@ -216,7 +216,7 @@ services:
     container_name: kqa-frontend
     restart: unless-stopped
     ports:
-      - '80:80'
+      - '180:80'
     depends_on:
       - backend
     healthcheck:

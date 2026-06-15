@@ -12,8 +12,8 @@ from app.common.graph_store import (
 )
 from app.common.kg_local_extractor import extract_local_knowledge
 from app.common.llm_client import chat
+from app.common.runtime_config import get_llm_config, has_remote_llm_config
 from app.database import SessionLocal
-from app.config import settings
 from app.models import (
     Document, DocumentChunk, KgExtractionBatch, KgExtractionRun, KgRebuild, KgSyncFailure,
     KnowledgePoint, KnowledgePointSource, KnowledgeRelation,
@@ -70,7 +70,7 @@ def queue_document_extraction_task(document_id: int, run_id: int = None):
             return {"status": "skipped", "reason": "no chunks"}
 
         run.status = "running"
-        run.model = settings.llm_model
+        run.model = get_llm_config(db).model
         run.started_at = run.started_at or datetime.now()
         run.batch_count = (total_chunks + batch_chunks - 1) // batch_chunks
         db.commit()
@@ -345,7 +345,7 @@ def extract_knowledge_task(self, document_id: int, run_id: int = None):
             run = db.query(KgExtractionRun).filter(KgExtractionRun.id == run_id).first()
             if run:
                 run.status = "running"
-                run.model = settings.llm_model
+                run.model = get_llm_config(db).model
                 run.started_at = datetime.now()
                 db.commit()
         doc = db.query(Document).filter(Document.id == document_id).first()
@@ -525,8 +525,7 @@ def _call_extract_entities(batch_text: str, subject_name: str, doc_type: str) ->
 
 
 def _has_remote_llm_config() -> bool:
-    key = (settings.deepseek_api_key or "").strip()
-    return bool(key and "your-deepseek-api-key" not in key and "sk-your" not in key)
+    return has_remote_llm_config()
 
 
 def _merge_extraction_payloads(llm_data: dict, local_data: dict) -> dict:

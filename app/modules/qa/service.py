@@ -6,10 +6,10 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.common.llm_client import chat_stream
+from app.common.runtime_config import get_llm_config
 from app.common.utils import sanitize_markdown
-from app.config import settings
 from app.database import SessionLocal
-from app.models import Conversation, Message, SystemConfig
+from app.models import Conversation, Message
 from app.modules.qa.intent import detect_intent, is_meta_question, is_model_identity_question
 from app.modules.qa.prompt import build_prompt
 from app.modules.qa.retriever import fusion_rank, search_exam, search_graph, search_knowledge, search_notes
@@ -200,23 +200,16 @@ class QaService:
         ]
         messages = build_prompt(intent, question, contexts, history=history)
 
-        # Read LLM config from DB, fallback to env
-        def _cfg(key: str, fallback: str = "") -> str:
-            try:
-                row = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
-                return row.config_value if row else fallback
-            except Exception:
-                return fallback
-
-        model_name = _cfg("llm_model", settings.llm_model)
-        api_key = _cfg("deepseek_api_key", settings.deepseek_api_key)
-        api_base = _cfg("deepseek_api_base", settings.deepseek_api_base)
+        # 从 system_configs（DB）解析一次 LLM 运行时配置（此刻请求 db 仍打开），env 兜底；
+        # 流式生成时直接复用解析结果，避免会话关闭后再查库。
+        llm_cfg = get_llm_config(db)
+        model_name = llm_cfg.model
         identity_answer = None
         if is_model_identity_question(question):
             identity_answer = (
                 f"当前问答服务配置的 API 模型是 **{model_name}**。\n\n"
                 "该名称来自系统控制页面保存的服务端配置，并会作为下一次提问请求中的 "
-                "`model` 参数发送给 DeepSeek API。模型自行生成的版本描述可能受训练语料限制，"
+                "`model` 参数发送给所配置的大模型 API。模型自行生成的版本描述可能受训练语料限制，"
                 "不应作为实际运行配置的判断依据。"
             )
 
@@ -230,7 +223,12 @@ class QaService:
                     collected_content = identity_answer
                     yield {"data": json.dumps({"type": "token", "content": identity_answer}, ensure_ascii=False)}
                 else:
-                    stream = chat_stream(messages, model=model_name, api_key=api_key, api_base=api_base)
+                    stream = chat_stream(
+                        messages,
+                        model=llm_cfg.model,
+                        api_key=llm_cfg.api_key,
+                        api_base=llm_cfg.api_url,
+                    )
                     for chunk in stream:
                         delta = chunk.choices[0].delta
                         if delta.content:

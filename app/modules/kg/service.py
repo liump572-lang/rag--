@@ -772,7 +772,12 @@ class KgService:
         edges = kg_data.get("edges", [])
 
         from app.common.vector_store import search_chunks
-        chunk_results = search_chunks(subject.name, top_k=30, where={"subject_id": subject_id})
+        # Chroma 分片 metadata 只有 document_id，需先把科目解析成其文档 id 集合再过滤。
+        doc_ids = [row.id for row in db.query(Document.id).filter(Document.subject_id == subject_id).all()]
+        chunk_results = (
+            search_chunks(subject.name, top_k=30, where={"document_id": {"$in": doc_ids}}, db=db)
+            if doc_ids else []
+        )
 
         nodes_text = "\n".join(
             f"- {n.get('label', '')} (ID: {n.get('id', '')})"
@@ -830,6 +835,7 @@ class KgService:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            db=db,
             temperature=0.7,
             max_tokens=8192,
         )

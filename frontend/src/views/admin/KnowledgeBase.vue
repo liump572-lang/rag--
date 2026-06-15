@@ -6,6 +6,19 @@
         <el-button type="primary" @click="showUpload">上传文档</el-button>
       </div>
 
+      <!-- 状态统计卡片 -->
+      <div class="stat-cards">
+        <div class="stat"><span class="num">{{ stats.parsed }}</span><span class="label">已解析</span></div>
+        <div class="stat warn"><span class="num">{{ stats.parsing }}</span><span class="label">解析中</span></div>
+        <div class="stat warn"><span class="num">{{ stats.building }}</span><span class="label">图谱构建中</span></div>
+        <div class="stat ok"><span class="num">{{ stats.graphDone }}</span><span class="label">图谱完成</span></div>
+        <div class="stat danger"><span class="num">{{ stats.parseFailed }}</span><span class="label">解析失败</span></div>
+        <div class="stat danger"><span class="num">{{ stats.graphFailed }}</span><span class="label">图谱失败</span></div>
+        <div class="stat-hint" v-if="hasActive">
+          <span class="dot" /> 后台处理中，列表每 3 秒自动刷新
+        </div>
+      </div>
+
       <el-form :model="filter" inline class="filter-bar">
         <el-form-item label="科目">
           <el-select v-model="filter.subject_id" placeholder="全部" clearable style="width:140px">
@@ -20,7 +33,7 @@
             <el-option label="补充" value="supplement" />
           </el-select>
         </el-form-item>
-        <el-form-item label="状态">
+        <el-form-item label="解析状态">
           <el-select v-model="filter.parse_status" placeholder="全部" clearable style="width:120px">
             <el-option label="等待中" value="pending" />
             <el-option label="解析中" value="parsing" />
@@ -29,17 +42,17 @@
           </el-select>
         </el-form-item>
         <el-form-item>
-          <el-input v-model="filter.keyword" placeholder="搜索文档标题" clearable style="width:200px" @keyup.enter="fetchDocs" />
+          <el-input v-model="filter.keyword" placeholder="搜索文档标题" clearable style="width:200px" @keyup.enter="onSearch" />
         </el-form-item>
         <el-form-item>
-          <el-button @click="fetchDocs">查询</el-button>
+          <el-button @click="onSearch">查询</el-button>
         </el-form-item>
       </el-form>
 
       <el-table :data="documents" stripe v-loading="loading" style="width: 100%">
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="subject_name" label="科目" width="120" />
+        <el-table-column prop="subject_name" label="科目" width="110" />
         <el-table-column prop="file_type" label="格式" width="70">
           <template #default="{ row }">
             <el-tag size="small">{{ row.file_type }}</el-tag>
@@ -50,13 +63,20 @@
             <el-tag :type="docTypeTag(row.doc_type)" size="small">{{ docTypeLabel(row.doc_type) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="parse_status" label="状态" width="90">
+        <el-table-column label="文档解析" width="100">
           <template #default="{ row }">
-            <el-tag :type="statusTag(row.parse_status)" size="small">{{ statusLabel(row.parse_status) }}</el-tag>
+            <el-tag :type="parseTag(row.parse_status)" size="small" :title="row.error_msg || ''">
+              {{ parseLabel(row.parse_status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="图谱构建" width="130">
+          <template #default="{ row }">
+            <el-tag :type="graphTag(row)" size="small" :title="row.graph_error || ''">{{ graphLabel(row) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="chunk_count" label="片段数" width="70" />
-        <el-table-column prop="created_at" label="上传时间" width="170" />
+        <el-table-column prop="created_at" label="上传时间" width="160" />
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="viewChunks(row)">片段</el-button>
@@ -76,7 +96,7 @@
           :page-size="size"
           :total="total"
           layout="prev, pager, next"
-          @current-change="fetchDocs"
+          @current-change="() => fetchDocs()"
         />
       </div>
     </el-card>
@@ -142,7 +162,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, onUnmounted, reactive, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getDocumentList, uploadDocument, deleteDocument, reparseDocument, getDocumentChunks } from '@/api/kb'
@@ -187,20 +207,84 @@ const chunks = ref([])
 const chunkLoading = ref(false)
 
 const docTypeMap = { textbook: '教材', exam: '真题', note: '笔记', supplement: '补充' }
-const statusMap = { pending: '等待中', parsing: '解析中', success: '成功', failed: '失败' }
+const parseMap = { pending: '等待中', parsing: '解析中', success: '成功', failed: '失败' }
 
 function docTypeLabel(v) { return docTypeMap[v] || v }
 function docTypeTag(v) { return v === 'exam' ? 'warning' : v === 'textbook' ? 'primary' : 'info' }
-function statusLabel(v) { return statusMap[v] || v }
-function statusTag(v) { return v === 'success' ? 'success' : v === 'failed' ? 'danger' : v === 'parsing' ? 'warning' : 'info' }
+
+// ── 文档解析状态 ──
+function parseLabel(v) { return parseMap[v] || v }
+function parseTag(v) { return v === 'success' ? 'success' : v === 'failed' ? 'danger' : v === 'parsing' ? 'warning' : 'info' }
+
+// ── 图谱构建状态（来自最新一次非 rebuild 抽取运行） ──
+function graphPct(row) {
+  if (row.graph_status === 'success') return 100
+  const total = row.graph_total || 0
+  const proc = row.graph_processed || 0
+  return total > 0 ? Math.round((proc / total) * 100) : 0
+}
+function graphLabel(row) {
+  if (row.parse_status !== 'success') return '—'
+  const s = row.graph_status
+  if (!s) return '未开始'
+  if (s === 'queued') return '排队中'
+  if (s === 'running') return `构建中 ${graphPct(row)}%`
+  if (s === 'success') return '已完成'
+  if (s === 'failed') return '失败'
+  if (s === 'canceled') return '已取消'
+  return s
+}
+function graphTag(row) {
+  if (row.parse_status !== 'success') return 'info'
+  const s = row.graph_status
+  if (s === 'success') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'running' || s === 'queued') return 'warning'
+  return 'info'
+}
+
+// ── 统计卡片 ──
+const stats = computed(() => {
+  const d = documents.value
+  return {
+    parsed: d.filter(x => x.parse_status === 'success').length,
+    parsing: d.filter(x => ['pending', 'parsing'].includes(x.parse_status)).length,
+    building: d.filter(x => x.parse_status === 'success' && ['queued', 'running'].includes(x.graph_status)).length,
+    graphDone: d.filter(x => x.graph_status === 'success').length,
+    parseFailed: d.filter(x => x.parse_status === 'failed').length,
+    graphFailed: d.filter(x => x.parse_status === 'success' && x.graph_status === 'failed').length,
+  }
+})
+
+// 是否还有处于非终态、需要继续轮询刷新的文档
+const hasActive = computed(() =>
+  documents.value.some(x =>
+    ['pending', 'parsing'].includes(x.parse_status) ||
+    ['queued', 'running'].includes(x.graph_status),
+  ),
+)
+
+// ── 动态刷新（轮询） ──
+let pollTimer = null
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(() => {
+    if (hasActive.value) fetchDocs(true)
+    else stopPolling()
+  }, 3000)
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
 
 onMounted(() => {
   fetchDocs()
   fetchSubjects()
 })
+onUnmounted(stopPolling)
 
-async function fetchDocs() {
-  loading.value = true
+async function fetchDocs(silent = false) {
+  if (!silent) loading.value = true
   try {
     const params = { page: page.value, size: size.value, ...filter }
     Object.keys(params).forEach(k => { if (params[k] === '' || params[k] === null) delete params[k] })
@@ -210,8 +294,16 @@ async function fetchDocs() {
       total.value = res.data.total
     }
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
+    // 有进行中的文档则保持轮询，否则停止
+    if (hasActive.value) startPolling()
+    else stopPolling()
   }
+}
+
+function onSearch() {
+  page.value = 1
+  fetchDocs()
 }
 
 async function fetchSubjects() {
@@ -279,8 +371,9 @@ async function handleUpload() {
     fd.append('file', selectedFile.value)
     const res = await uploadDocument(fd)
     if (res.code === 200) {
-      ElMessage.success('上传成功，开始解析')
+      ElMessage.success('已开始上传，解析与图谱构建将在后台进行，列表自动刷新')
       uploadVisible.value = false
+      page.value = 1
       fetchDocs()
     }
   } catch (e) {
@@ -317,6 +410,25 @@ async function viewChunks(row) {
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .page-header h2 { margin: 0; }
+
+.stat-cards { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
+.stat {
+  min-width: 86px; padding: 10px 14px; border-radius: 8px;
+  background: var(--surface2, #f5f7fa); border: 1px solid var(--border, #ebeef5);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.stat .num { font-size: 20px; font-weight: 700; color: var(--text, #303133); }
+.stat .label { font-size: 12px; color: var(--text2, #909399); }
+.stat.ok .num { color: #67c23a; }
+.stat.warn .num { color: #e6a23c; }
+.stat.danger .num { color: #f56c6c; }
+.stat-hint { font-size: 12px; color: var(--text2, #909399); display: flex; align-items: center; gap: 6px; }
+.stat-hint .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #e6a23c;
+  display: inline-block; animation: blink 1s infinite;
+}
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
 .filter-bar { margin-bottom: 16px; }
 .filter-bar .el-form-item { margin-bottom: 0; }
 .pagination-wrap { margin-top: 20px; display: flex; justify-content: center; }

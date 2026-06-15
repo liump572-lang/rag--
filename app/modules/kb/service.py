@@ -1,9 +1,10 @@
+import logging
 import os
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import and_, exists, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, func, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.common.parsers import parse_document
 from app.common.utils import generate_filename
@@ -28,6 +29,8 @@ FILE_TYPE_MAP = {
     ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx",
     ".txt": "txt", ".md": "md",
 }
+
+logger = logging.getLogger("app")
 
 
 class KbService:
@@ -89,6 +92,18 @@ class KbService:
         parse_status: Optional[str] = None,
         keyword: Optional[str] = None,
     ):
+        # 每个文档最新一次（非 rebuild）的图谱抽取运行，用于展示「图谱构建」状态
+        latest_run_sq = (
+            db.query(
+                KgExtractionRun.document_id.label("doc_id"),
+                func.max(KgExtractionRun.id).label("max_run_id"),
+            )
+            .filter(KgExtractionRun.rebuild_id.is_(None))
+            .group_by(KgExtractionRun.document_id)
+            .subquery()
+        )
+        latest_run = aliased(KgExtractionRun)
+
         query = db.query(
             Document.id,
             Document.subject_id,
@@ -105,7 +120,13 @@ class KbService:
             Document.question_type,
             Document.created_at,
             Document.updated_at,
-        ).join(Subject, Document.subject_id == Subject.id, isouter=True)
+            latest_run.status.label("graph_status"),
+            latest_run.processed_batches.label("graph_processed"),
+            latest_run.batch_count.label("graph_total"),
+            latest_run.error_msg.label("graph_error"),
+        ).join(Subject, Document.subject_id == Subject.id, isouter=True) \
+         .outerjoin(latest_run_sq, latest_run_sq.c.doc_id == Document.id) \
+         .outerjoin(latest_run, latest_run.id == latest_run_sq.c.max_run_id)
 
         if subject_id:
             query = query.filter(Document.subject_id == subject_id)
@@ -129,10 +150,9 @@ class KbService:
         if not doc:
             return False
 
-        from app.common.vector_store import delete_document_chunks
-        delete_document_chunks(document_id, strict=True)
-
         file_path = doc.file_path
+        # MySQL 是事实源：先在一个事务里清理所有 MySQL 记录并提交，再删除外部存储
+        # （向量库 / 图库），避免「MySQL 回滚但向量已删」造成的不一致。
         neo4j_cleanup = _merge_kg_cleanup(
             _cleanup_document_kg_data(db, document_id),
             _cleanup_orphan_kg_data(db),
@@ -143,6 +163,8 @@ class KbService:
         db.delete(doc)
         db.commit()
 
+        # MySQL 已提交，以下为外部存储对账：失败不影响一致性（残留可被对账/补偿清理）。
+        _delete_document_vectors(document_id)
         _sync_document_kg_deletes(db, neo4j_cleanup)
 
         if file_path and os.path.exists(file_path):
@@ -154,9 +176,6 @@ class KbService:
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
             raise ValueError("Document not found")
-
-        from app.common.vector_store import delete_document_chunks
-        delete_document_chunks(document_id, strict=True)
 
         doc.parse_revision = (doc.parse_revision or 0) + 1
         neo4j_cleanup = _merge_kg_cleanup(
@@ -170,6 +189,8 @@ class KbService:
         doc.chunk_count = 0
         db.commit()
 
+        # MySQL 提交后再清理外部存储；重新解析会以新的 chunk_id 重新写入向量库。
+        _delete_document_vectors(document_id)
         _sync_document_kg_deletes(db, neo4j_cleanup)
 
         from app.tasks.document_parse import parse_document_task
@@ -252,7 +273,7 @@ class KbService:
                 })
 
             from app.common.vector_store import add_chunks
-            add_chunks(chroma_chunks)
+            add_chunks(chroma_chunks, db=db)
 
             doc.chunk_count = len(chunks)
             doc.parse_status = "success"
@@ -271,6 +292,18 @@ class KbService:
                 doc.error_msg = str(e)[:500]
                 db.commit()
             raise e
+
+
+def _delete_document_vectors(document_id: int):
+    """事务提交后对 ChromaDB 做尽力而为的清理。
+
+    MySQL 为事实源，残留向量对检索无害且可被后续对账清理，因此这里的失败
+    不能中断删除流程，仅记录告警。"""
+    from app.common.vector_store import delete_document_chunks
+    try:
+        delete_document_chunks(document_id, strict=True)
+    except Exception as exc:
+        logger.warning("ChromaDB 向量清理失败 document_id=%s: %s", document_id, exc)
 
 
 def _enrich_chunks_with_context(chunks: list, structure: dict, doc_title: str) -> list:
